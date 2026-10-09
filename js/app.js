@@ -2,7 +2,7 @@ import { createBackend, SpaceError } from './backend.js';
 import {
   SUGAR_OPTIONS, ICE_OPTIONS, esc, formatPrice, aggregate, totalOf, expectedPeople, groupByUnit, pendingPeople,
   drinkLabel, summaryText, detailText, favsFor, sheetHTML, parseMenu, parseToppingsText, mergeToppings, applyMenu,
-  parseRoster, mergeRoster, readTextFile, menuToCSV, splitMenuSections,
+  parseRoster, mergeRoster, readTextFile, menuToCSV, splitMenuSections, rosterToCSV,
 } from './logic.js';
 
 const params = new URLSearchParams(location.search);
@@ -515,7 +515,7 @@ function viewRoster() {
   const draft = r.draft ?? [];
   const people = draft.reduce((s, u) => s + u.members.length, 0);
   return `<section class="card">
-      <div class="row-h"><h3>單位與姓名（${draft.length} 單位・${people} 人）</h3>${btn('importRoster', '⬆️ 批次匯入', { cls: 'sm' })}</div>
+      <div class="row-h"><h3>單位與姓名（${draft.length} 單位・${people} 人）</h3><div class="btns">${btn('importRoster', '⬆️ 批次匯入', { cls: 'sm' })}${btn('exportRoster', '⬇️ 匯出名單', { cls: 'sm', disabled: !draft.length })}</div></div>
       <div class="add-row">
         <input type="text" data-k="newUnit" data-bind="roster.newUnit" data-rerender data-enter="addUnit" maxlength="60" placeholder="新增單位名稱" value="${esc(r.newUnit)}">
         ${btn('addUnit', '＋ 新增', { cls: 'primary', disabled: !r.newUnit.trim() })}
@@ -924,13 +924,7 @@ const actions = {
       items: d.items.filter((i) => i.n.trim()).map((i) => ({ n: i.n.trim(), p: i.p })),
       toppings: d.toppings.filter((t) => t.n.trim()).map((t) => ({ n: t.n.trim(), p: t.p })),
     };
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([menuToCSV(shop)], { type: 'text/csv;charset=utf-8' }));
-    a.download = `${(d.name.trim() || '菜單').replace(/[\\/:*?"<>|]/g, '_')}-菜單.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    downloadCSV(menuToCSV(shop), `${d.name.trim() || '菜單'}-菜單.csv`);
     toast(S.menu.dirty ? '已匯出（含尚未儲存的修改）' : '菜單已匯出');
   },
   pickFile: (el) => document.getElementById(el.dataset.target)?.click(),
@@ -966,6 +960,12 @@ const actions = {
     });
     toast('已套用到草稿，記得按「儲存名單」');
   },
+  exportRoster() {
+    const d = S.roster.draft.filter((u) => u.name.trim());
+    const name = S.data.space.name;
+    downloadCSV(rosterToCSV(d.map((u) => ({ name: u.name.trim(), members: u.members }))), `${name}-名單.csv`);
+    toast(S.roster.dirty ? '已匯出（含尚未儲存的修改）' : '名單已匯出');
+  },
   async saveRoster() {
     const d = S.roster.draft;
     if (d.some((u) => !u.name.trim())) return toast('單位名稱不能空白', 'err');
@@ -978,6 +978,17 @@ const actions = {
     }
   },
 };
+
+// 下載 CSV（檔名去掉 Windows 不允許的字元）
+function downloadCSV(text, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  a.download = filename.replace(/[\\/:*?"<>|]/g, '_');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 
 function sheetUrl() {
   const cur = current();

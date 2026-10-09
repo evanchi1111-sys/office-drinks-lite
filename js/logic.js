@@ -289,6 +289,12 @@ export function splitMenuSections(text) {
   return { menu: lines.slice(0, at).join('\n'), toppings };
 }
 
+/** 匯出名單成 CSV：一人一列（單位,姓名），方便 Excel 排序篩選；沒有人員的單位只寫單位。可直接再匯入。 */
+export function rosterToCSV(units) {
+  const rows = [['單位', '姓名'], ...units.flatMap((u) => (u.members.length ? u.members.map((m) => [u.name, m]) : [[u.name]]))];
+  return '﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
 export function parseRoster(text) {
   const map = new Map();
   for (const raw of text.replace(/^﻿/, '').split(/\r?\n/)) {
