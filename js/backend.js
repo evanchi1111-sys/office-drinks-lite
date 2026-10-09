@@ -66,7 +66,6 @@ async function createSupabaseBackend() {
       (await write('ds_session_create', { p_space: space, p_title: title, p_shop: shopId, p_participants: participants })).id,
     setParticipants: (space, id, participants) => write('ds_session_set_participants', { p_space: space, p_id: id, p_participants: participants }),
     setStatus: (space, id, status) => write('ds_session_set_status', { p_space: space, p_id: id, p_status: status }),
-    deleteSession: (space, id) => write('ds_session_delete', { p_space: space, p_id: id }),
 
     saveShop: async (space, shop) => (await write('ds_shop_save', { p_space: space, p_shop: shop })).id,
     deleteShop: (space, id) => write('ds_shop_delete', { p_space: space, p_id: id }),
@@ -245,12 +244,6 @@ function createDemoBackend() {
       const s = sp(space).sessions.find((x) => x.id === id);
       if (!s) fail('找不到這個團');
       s.status = status;
-      return done();
-    },
-    async deleteSession(space, id) {
-      const db = sp(space);
-      db.sessions = db.sessions.filter((x) => x.id !== id);
-      db.orders = db.orders.filter((x) => x.session_id !== id);
       return done();
     },
 

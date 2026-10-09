@@ -306,7 +306,6 @@ function viewSessionBar(cur) {
       ${btn('share', '🔗 複製分享連結', { cls: 'sm' })}
       ${btn('editParticipants', `👥 參加成員${cur.participants ? `（${cur.participants.length} 人）` : '（全部）'}`, { cls: 'sm' })}
       ${cur.status === 'open' ? btn('close', '結束訂購', { cls: 'sm', disabled: S.busy }) : btn('reopen', '重新開放', { cls: 'sm', disabled: S.busy })}
-      ${confirmBtn(`delSession:${cur.id}`, '刪除整團', '再按一次刪除整團')}
     </div>` : ''}
   </section>`;
 }
@@ -721,9 +720,7 @@ const actions = {
     }
     S.armed = null;
     const [kind, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
-    if (kind === 'delSession') {
-      run(() => S.backend.deleteSession(SPACE, id), '已刪除整團').then(() => { S.sid = null; reconcile(); render(); });
-    } else if (kind === 'delShop') {
+    if (kind === 'delShop') {
       run(() => S.backend.deleteShop(SPACE, id), '已刪除店家').then((ok) => { if (ok) { S.menu.dirty = false; S.menu.selId = null; reconcile(); render(); } });
     } else if (kind === 'delUnit') {
       editRoster((d) => d.splice(d.findIndex((u) => u.key === id), 1));
