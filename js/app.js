@@ -2,7 +2,7 @@ import { createBackend, SpaceError } from './backend.js';
 import {
   SUGAR_OPTIONS, ICE_OPTIONS, esc, formatPrice, aggregate, totalOf, expectedPeople, groupByUnit, pendingPeople,
   drinkLabel, summaryText, detailText, favsFor, sheetHTML, parseMenu, parseToppingsText, mergeToppings, applyMenu,
-  parseRoster, mergeRoster, readTextFile,
+  parseRoster, mergeRoster, readTextFile, menuToCSV, splitMenuSections,
 } from './logic.js';
 
 const params = new URLSearchParams(location.search);
@@ -482,7 +482,7 @@ function viewMenu() {
     </section>
     <section class="card">
       <div class="row-h"><h3>品項與價格（${d.items.length}）</h3>
-        <div class="btns">${btn('importMenu', '⬆️ 匯入菜單', { cls: 'sm' })}${btn('addItem', '＋ 新增品項', { cls: 'sm' })}</div></div>
+        <div class="btns">${btn('importMenu', '⬆️ 匯入菜單', { cls: 'sm' })}${btn('exportMenu', '⬇️ 匯出菜單', { cls: 'sm', disabled: !d.items.length && !d.toppings.length })}${btn('addItem', '＋ 新增品項', { cls: 'sm' })}</div></div>
       ${d.items.length > 8 ? `<input type="search" class="search" data-k="menuFilter" data-bind="menu.filter" data-rerender placeholder="🔍 搜尋品項" value="${esc(m.filter)}">` : ''}
       ${d.items.length ? '' : '<p class="empty">還沒有品項，按「匯入菜單」或「新增品項」。</p>'}
       <ul class="items">${visible.map(({ it, idx }) => `<li class="item">
@@ -601,7 +601,7 @@ function viewModal() {
   }
   if (md.type === 'importMenu') {
     const p = parsedMenu(md);
-    return shell('匯入菜單', '貼上文字或 Excel 儲存格（每行：品名、各規格價格），或上傳 CSV。第一行若是「品名、中杯、大杯」會當作規格名稱。',
+    return shell('匯入菜單', '貼上文字或 Excel 儲存格（每行：品名、各規格價格），或上傳 CSV。第一行若是「品名、中杯、大杯」會當作規格名稱；用「匯出菜單」下載的檔案可以直接匯入（含加料）。',
       `<div>${btn('pickFile', '📄 上傳 CSV / 文字檔', { cls: 'sm', attrs: 'data-target="menuFile"' })}<input type="file" id="menuFile" hidden accept=".csv,.txt,.tsv,text/csv,text/plain" data-change="menuFile"></div>
       <label class="lbl">飲料與價格</label>
       <textarea rows="8" data-k="imText" data-bind="modal.text" data-rerender placeholder="品名,中杯,大杯&#10;珍珠奶茶,50,60&#10;四季春茶,30,35">${esc(md.text)}</textarea>
@@ -626,8 +626,11 @@ function viewModal() {
 }
 
 function parsedMenu(md) {
-  const m = md.text.trim() ? parseMenu(md.text) : { sizes: ['中杯'], items: [] };
-  const toppings = md.topText.trim() ? parseToppingsText(md.topText) : [];
+  // 匯出的 CSV 下方有「加料」區段，跟加料欄位的內容合併
+  const sec = splitMenuSections(md.text);
+  const m = sec.menu.trim() ? parseMenu(sec.menu) : { sizes: ['中杯'], items: [] };
+  const topText = [sec.toppings, md.topText].filter((s) => s.trim()).join('\n');
+  const toppings = topText.trim() ? parseToppingsText(topText) : [];
   if (!m.items.length && !toppings.length) return null;
   return { ...m, toppings };
 }
@@ -913,6 +916,22 @@ const actions = {
       dr.toppings = (res.toppings ?? dr.toppings).map((t) => ({ key: nk(), n: t.n, p: t.p }));
     });
     toast('已套用到草稿，記得按「儲存菜單」');
+  },
+  exportMenu() {
+    const d = S.menu.draft;
+    const shop = {
+      sizes: d.sizes.map((s) => s.trim() || '規格'),
+      items: d.items.filter((i) => i.n.trim()).map((i) => ({ n: i.n.trim(), p: i.p })),
+      toppings: d.toppings.filter((t) => t.n.trim()).map((t) => ({ n: t.n.trim(), p: t.p })),
+    };
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([menuToCSV(shop)], { type: 'text/csv;charset=utf-8' }));
+    a.download = `${(d.name.trim() || '菜單').replace(/[\\/:*?"<>|]/g, '_')}-菜單.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(S.menu.dirty ? '已匯出（含尚未儲存的修改）' : '菜單已匯出');
   },
   pickFile: (el) => document.getElementById(el.dataset.target)?.click(),
 

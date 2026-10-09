@@ -231,7 +231,7 @@ export function parseMenu(text) {
     return r;
   });
   const first = rows[0];
-  const looksHeader = first.length > 1 && first.slice(1).every((c) => c !== '' && parsePrice(c) === null);
+  const looksHeader = first.length > 1 && (first[0] === '品名' || first.slice(1).every((c) => c !== '' && parsePrice(c) === null));
   let sizes;
   let body = rows;
   if (looksHeader) {
@@ -265,6 +265,28 @@ export function applyMenu(existing, parsed, mode) {
     else items.push({ n: it.n, p: np });
   }
   return { sizes, items, toppings: mergeToppings(existing.toppings ?? [], parsed.toppings ?? [], 'append') };
+}
+
+const csvCell = (v) => { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+
+/** 匯出菜單成 CSV（與匯入格式相同，加料放在下方「加料」區段）；開頭加 BOM 讓 Excel 正確顯示中文。 */
+export function menuToCSV(shop) {
+  const rows = [['品名', ...shop.sizes], ...shop.items.map((i) => [i.n, ...shop.sizes.map((_, k) => i.p[k] ?? '')])];
+  if (shop.toppings.length) rows.push([], ['加料', '加價'], ...shop.toppings.map((t) => [t.n, t.p]));
+  return '﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
+/** 把匯入的文字拆成「菜單」與「加料」兩段：從第一格是「加料」的那一行開始算加料。 */
+export function splitMenuSections(text) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/);
+  const at = lines.findIndex((l) => /^\s*"?加料"?\s*([,\t，]|$)/.test(l));
+  if (at < 0) return { menu: text, toppings: '' };
+  const toppings = lines.slice(at + 1)
+    .map((l) => splitCSV(l)[0])
+    .filter((r) => r && r[0])
+    .map((r) => `${r[0]} ${r[1] ?? ''}`.trim())
+    .join('\n');
+  return { menu: lines.slice(0, at).join('\n'), toppings };
 }
 
 export function parseRoster(text) {
