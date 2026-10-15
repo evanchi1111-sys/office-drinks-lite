@@ -32,7 +32,7 @@ function rememberSpace(id, name) {
 function forgetSpace(id) {
   store.set(RECENT_KEY, JSON.stringify(recentSpaces().filter((x) => x.id !== id)));
 }
-const newForm = () => ({ item: '', size: '', sugar: '正常糖', ice: '正常冰', tops: [], note: '', qty: 1, editId: null, q: '' });
+const newForm = () => ({ item: '', size: '', sugar: '正常糖', ice: '正常冰', tops: [], note: '', qty: 1, editId: null, q: '', custom: false, cItem: '', cPrice: '' });
 const defaultTitle = () => { const d = new Date(); return `${d.getMonth() + 1}/${d.getDate()} 飲料團`; };
 const demoQ = DEMO ? '&demo' : '';
 const spaceUrl = (id) => `${location.origin}${location.pathname}?space=${encodeURIComponent(id)}${demoQ}`;
@@ -338,9 +338,9 @@ function viewOrder(session) {
   const mine = name ? orders.filter((o) => o.name === name) : [];
   const favs = favsFor(name, all, shop);
 
-  const itemObj = shop.items.find((i) => i.n === f.item);
+  const itemObj = f.custom ? null : shop.items.find((i) => i.n === f.item);
   const sizeIdx = shop.sizes.indexOf(f.size);
-  const base = itemObj && sizeIdx >= 0 ? itemObj.p[sizeIdx] : null;
+  const base = f.custom ? customPrice(f) : itemObj && sizeIdx >= 0 ? itemObj.p[sizeIdx] : null;
   const chosenTops = shop.toppings.filter((t) => f.tops.includes(t.n));
   const price = base != null ? base + chosenTops.reduce((s, t) => s + t.p, 0) : null;
   const missing = itemObj ? shop.sizes.filter((_, i) => itemObj.p[i] == null) : [];
@@ -389,8 +389,17 @@ function viewOrder(session) {
         </button></li>`).join('')}
         ${filtered.length ? '' : '<li class="empty">找不到符合的飲料</li>'}
       </ul>
-      ${f.item ? `<div class="opts">
-        <div class="picked">已選：${esc(f.item)}</div>
+      ${f.custom ? '' : `<div class="custom-entry">${btn('customItem', '✏️ 菜單上沒有？自己輸入（季節限定等）', { cls: 'sm' })}</div>`}
+      ${f.item || f.custom ? `<div class="opts">
+        ${f.custom
+          ? `<div class="custom-box">
+              <div class="row-h"><b class="picked">自己輸入的飲料</b>${btn('cancelCustom', '改選菜單', { cls: 'ghost sm' })}</div>
+              <label class="lbl">飲料名稱</label>
+              <input type="text" data-k="cItem" data-bind="f.cItem" data-rerender maxlength="100" placeholder="例如：楊枝甘露（季節限定）" value="${esc(f.cItem)}">
+              <label class="lbl">單杯價格（不含加料，請照店家菜單填）</label>
+              <input type="text" inputmode="numeric" data-k="cPrice" data-cprice placeholder="例如：65" value="${esc(f.cPrice)}">
+            </div>`
+          : `<div class="picked">已選：${esc(f.item)}</div>`}
         <label class="lbl">規格</label>${chips('f.size', shop.sizes, f.size, missing)}
         <label class="lbl">甜度</label>${chips('f.sugar', SUGAR_OPTIONS, f.sugar)}
         <label class="lbl">冰量</label>${chips('f.ice', ICE_OPTIONS, f.ice)}
@@ -411,7 +420,7 @@ function viewOrder(session) {
     ${name ? `<section class="card">
       <h3>${esc(name)} 在這團的訂單（${mine.length} 杯）</h3>
       ${mine.length ? `<ul class="list">${mine.map((o) => `<li>
-        <span class="grow">${esc(drinkLabel(o))} <b class="money">${o.price != null ? `$${o.price}` : ''}</b></span>
+        <span class="grow">${esc(drinkLabel(o))}${customTag(o)} <b class="money">${o.price != null ? `$${o.price}` : ''}</b></span>
         ${open ? `${btn('editOrder', '✏️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="修改"` })}${btn('delOrder', '🗑️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="刪除"`, disabled: S.busy })}` : ''}
       </li>`).join('')}</ul>` : '<p class="empty">還沒有訂單</p>'}
     </section>` : ''}`;
@@ -445,7 +454,7 @@ function viewSummary(session) {
     ${groups.map((g) => `<section class="card">
       <div class="row-h"><h3>${esc(g.unit)}</h3><div class="sub">${g.orders.length} 杯・$${totalOf(g.orders)}</div></div>
       <ul class="list">${g.orders.map((o) => `<li>
-        <span class="who-n">${esc(o.name)}</span><span class="grow">${esc(drinkLabel(o))}</span><span class="money">${o.price != null ? `$${o.price}` : ''}</span>
+        <span class="who-n">${esc(o.name)}</span><span class="grow">${esc(drinkLabel(o))}${customTag(o)}</span><span class="money">${o.price != null ? `$${o.price}` : ''}</span>
         ${open ? btn('delOrder', '🗑️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="刪除"`, disabled: S.busy }) : ''}
       </li>`).join('')}</ul>
     </section>`).join('')}`;
@@ -601,7 +610,7 @@ function viewModal() {
     return shell(md.editId ? '確認修改訂單' : '確認送出訂單', '請確認內容正確，按「確定送出」才會完成訂購。',
       `<dl class="confirm-list">
         <dt>訂購人</dt><dd>${esc(f.unit ? `${f.unit}・${f.name}` : f.name)}</dd>
-        <dt>飲料</dt><dd>${esc(md.label)}</dd>
+        <dt>飲料</dt><dd>${esc(md.label)}${md.custom ? ' <span class="tag">自填</span>' : ''}</dd>
         <dt>杯數</dt><dd>${md.qty} 杯</dd>
         <dt>金額</dt><dd class="money">$${md.price * md.qty}${md.qty > 1 ? `<small>（$${md.price} × ${md.qty}）</small>` : ''}</dd>
       </dl>`,
@@ -711,14 +720,28 @@ function orderFields(o) {
     name: S.who.name.trim(),
     item: o.item, size: o.size, sugar: o.sugar, ice: o.ice, note: (o.note ?? '').trim(),
     toppings: o.toppings.map((t) => (typeof t === 'string' ? t : t.n)),
+    // 自行輸入的品項：價格由訂購人填（不含加料），其他品項價格由資料庫依菜單計算
+    ...(o.custom ? { custom: true, price: o.price } : {}),
   };
 }
 
+// 自行輸入的單杯價格（1～2000），沒填或不合理回傳 null
+function customPrice(f) {
+  const n = parseInt(f.cPrice, 10);
+  return n >= 1 && n <= 2000 ? n : null;
+}
+
+const customTag = (o) => (o.custom ? ' <span class="tag" title="菜單上沒有，品名與價格由訂購人填寫">自填</span>' : '');
+
 function loadIntoForm(o, shop) {
-  Object.assign(S.f, {
-    item: o.item, size: o.size, sugar: o.sugar, ice: o.ice, note: o.note,
-    tops: o.toppings.map((t) => t.n).filter((n) => shop?.toppings.some((t) => t.n === n)),
-  });
+  const tops = o.toppings.map((t) => t.n).filter((n) => shop?.toppings.some((t) => t.n === n));
+  if (o.custom) {
+    // 訂單價格含加料，換回不含加料的單杯價格
+    const topSum = o.toppings.reduce((s, t) => s + (t.p ?? 0), 0);
+    Object.assign(S.f, { custom: true, item: '', cItem: o.item, cPrice: o.price != null ? String(o.price - topSum) : '', size: o.size, sugar: o.sugar, ice: o.ice, note: o.note, tops });
+    return;
+  }
+  Object.assign(S.f, { custom: false, item: o.item, size: o.size, sugar: o.sugar, ice: o.ice, note: o.note, tops });
 }
 
 function pickerTarget() {
@@ -843,10 +866,18 @@ const actions = {
   pickItem(el) {
     const shop = shopOf(current());
     const it = shop.items.find((i) => i.n === el.dataset.v);
+    S.f.custom = false;
     S.f.item = it.n;
     S.f.size = shop.sizes.find((_, i) => it.p[i] != null) ?? '';
     render();
   },
+  customItem() {
+    const shop = shopOf(current());
+    Object.assign(S.f, { custom: true, item: '', size: S.f.size && shop.sizes.includes(S.f.size) ? S.f.size : shop.sizes[0] ?? '' });
+    render();
+    document.querySelector('[data-k="cItem"]')?.focus();
+  },
+  cancelCustom() { Object.assign(S.f, { custom: false, cItem: '', cPrice: '' }); render(); },
   toggleTop(el) {
     const n = el.dataset.v;
     S.f.tops = S.f.tops.includes(n) ? S.f.tops.filter((x) => x !== n) : [...S.f.tops, n];
@@ -856,16 +887,26 @@ const actions = {
     const f = S.f;
     const cur = current();
     if (!S.who.name.trim()) return toast('請先選擇或輸入你的姓名', 'err');
-    if (!f.item) return toast('請選一杯飲料', 'err');
-    if (!f.size) return toast('這個規格沒有販售，請換一個規格', 'err');
     const shop = shopOf(cur);
-    const it = shop.items.find((i) => i.n === f.item);
     const tops = shop.toppings.filter((t) => f.tops.includes(t.n));
-    const price = it.p[shop.sizes.indexOf(f.size)] + tops.reduce((s, t) => s + t.p, 0);
+    let item = f.item;
+    let base;
+    if (f.custom) {
+      item = f.cItem.trim();
+      if (!item) return toast('請輸入飲料名稱', 'err');
+      base = customPrice(f);
+      if (base == null) return toast('請輸入這杯飲料的價格（1～2000 元）', 'err');
+    } else {
+      if (!item) return toast('請選一杯飲料', 'err');
+      if (!f.size) return toast('這個規格沒有販售，請換一個規格', 'err');
+      base = shop.items.find((i) => i.n === item).p[shop.sizes.indexOf(f.size)];
+    }
+    const price = base + tops.reduce((s, t) => s + t.p, 0);
     // 先跳出確認視窗，按「確定送出」才寫入
     S.modal = {
-      type: 'confirmOrder', from: 'form', editId: f.editId, qty: f.editId ? 1 : f.qty, price,
-      fields: orderFields({ ...f, toppings: f.tops }), label: drinkLabel({ ...f, toppings: tops, note: f.note.trim() }),
+      type: 'confirmOrder', from: 'form', editId: f.editId, qty: f.editId ? 1 : f.qty, price, custom: f.custom,
+      fields: orderFields({ ...f, item, toppings: f.tops, custom: f.custom, price: base }),
+      label: drinkLabel({ ...f, item, toppings: tops, note: f.note.trim() }),
     };
     render();
   },
@@ -1139,6 +1180,11 @@ document.addEventListener('input', (e) => {
     if (v !== el.value) el.value = v;
     S.menu.draft.toppings[Number(el.dataset.tprice)].p = v === '' ? 0 : Math.min(1000, parseInt(v, 10));
     S.menu.dirty = true;
+    render();
+  } else if (el.dataset.cprice !== undefined) {
+    const v = el.value.replace(/[^\d]/g, '').slice(0, 4);
+    if (v !== el.value) el.value = v;
+    S.f.cPrice = v;
     render();
   }
 });
