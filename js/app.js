@@ -306,6 +306,7 @@ function viewSessionBar(cur) {
       ${btn('share', '🔗 複製分享連結', { cls: 'sm' })}
       ${btn('editParticipants', `👥 參加成員${cur.participants ? `（${cur.participants.length} 人）` : '（全部）'}`, { cls: 'sm' })}
       ${cur.status === 'open' ? btn('close', '結束訂購', { cls: 'sm', disabled: S.busy }) : btn('reopen', '重新開放', { cls: 'sm', disabled: S.busy })}
+      ${cur.status === 'closed' ? confirmBtn(`delSession:${cur.id}`, '🗑️ 刪除這個團', '再按一次刪除（訂單一併刪除）') : ''}
     </div>` : ''}
   </section>`;
 }
@@ -595,12 +596,25 @@ function viewModal() {
       <p class="hint">開團後，「訂購」和「彙總」會顯示這些人誰還沒選購飲料。</p>`,
       btn('createSession', '開團', { cls: 'primary', disabled: S.busy || !shops.length }));
   }
+  if (md.type === 'confirmOrder') {
+    const f = md.fields;
+    return shell(md.editId ? '確認修改訂單' : '確認送出訂單', '請確認內容正確，按「確定送出」才會完成訂購。',
+      `<dl class="confirm-list">
+        <dt>訂購人</dt><dd>${esc(f.unit ? `${f.unit}・${f.name}` : f.name)}</dd>
+        <dt>飲料</dt><dd>${esc(md.label)}</dd>
+        <dt>杯數</dt><dd>${md.qty} 杯</dd>
+        <dt>金額</dt><dd class="money">$${md.price * md.qty}${md.qty > 1 ? `<small>（$${md.price} × ${md.qty}）</small>` : ''}</dd>
+      </dl>`,
+      btn('closeModal', '返回修改') + btn('confirmOrderGo', S.busy ? '送出中…' : '確定送出', { cls: 'primary', attrs: 'autofocus', disabled: S.busy }));
+  }
   if (md.type === 'participants') {
     return shell('調整參加成員', '勾選這個團要訂的人。已經訂的人不會因為取消勾選而被刪除訂單。', viewPicker(md.picked),
       btn('participantsAll', '改回「名單上所有人」', { disabled: S.busy }) + btn('participantsSave', '儲存成員', { cls: 'primary', disabled: S.busy }));
   }
   if (md.type === 'importMenu') {
     const p = parsedMenu(md);
+    const notes = p ? importSizeNotes(p, S.menu.draft, md.mode) : [];
+    const blocked = notes.some((n) => n.bad);
     return shell('匯入菜單', '貼上文字或 Excel 儲存格（每行：品名、各規格價格），或上傳 CSV。第一行若是「品名、中杯、大杯」會當作規格名稱；用「匯出菜單」下載的檔案可以直接匯入（含加料）。',
       `<div>${btn('pickFile', '📄 上傳 CSV / 文字檔', { cls: 'sm', attrs: 'data-target="menuFile"' })}<input type="file" id="menuFile" hidden accept=".csv,.txt,.tsv,text/csv,text/plain" data-change="menuFile"></div>
       <label class="lbl">飲料與價格</label>
@@ -609,8 +623,9 @@ function viewModal() {
       <textarea rows="4" data-k="imTops" data-bind="modal.topText" data-rerender placeholder="大珍珠 10&#10;小珍珠 10&#10;椰果 10">${esc(md.topText)}</textarea>
       ${p ? `<div class="preview">讀到 <b>${p.items.length}</b> 個品項、<b>${p.toppings.length}</b> 種加料；規格：${esc(p.sizes.join('、'))}
         ${p.items.slice(0, 3).map((i) => `<div class="pv">${esc(i.n)} — ${i.p.map((x) => formatPrice(x)).join(' / ')}</div>`).join('')}</div>` : ''}
-      ${chips('modal.mode', ['加入到現有菜單', '取代整份菜單'], md.mode)}`,
-      btn('applyMenu', '套用到草稿', { cls: 'primary', disabled: !p }));
+      ${chips('modal.mode', ['加入到現有菜單', '取代整份菜單'], md.mode)}
+      ${notes.map((n) => `<div class="warn ${n.bad ? 'bad' : ''}">${n.bad ? '⛔' : '⚠️'} ${n.msg}</div>`).join('')}`,
+      btn('applyMenu', '套用到草稿', { cls: 'primary', disabled: !p || blocked }));
   }
   if (md.type === 'importRoster') {
     const parsed = md.text.trim() ? parseRoster(md.text) : [];
@@ -623,6 +638,33 @@ function viewModal() {
       btn('applyRoster', '套用到草稿', { cls: 'primary', disabled: !parsed.length }));
   }
   return '';
+}
+
+// 匯入菜單時，檔案規格和店家規格不一致的提醒（bad = 無法套用）
+function importSizeNotes(p, d, mode) {
+  const notes = [];
+  if (!p.items.length) return notes;
+  const list = (a) => a.map((s) => `「${esc(s)}」`).join('');
+  if (!p.header) {
+    notes.push({ msg: `檔案第一行沒有規格名稱，價格依序當作${list(p.sizes)}。如果不對，請在第一行加上標題，例如「品名,中杯,大杯」。` });
+  }
+  const noPrice = p.items.filter((i) => i.p.every((x) => x == null)).length;
+  if (noPrice) notes.push({ msg: `有 ${noPrice} 個品項沒有讀到價格，套用後請在菜單補上。` });
+  if (mode === '取代整份菜單') {
+    if (p.sizes.length > 8) notes.push({ bad: true, msg: `檔案有 ${p.sizes.length} 個規格，超過上限 8 個，請刪掉檔案中不用的規格欄。` });
+    else if (d.items.length && p.sizes.join('|') !== d.sizes.join('|')) notes.push({ msg: `規格會從${list(d.sizes)}改成${list(p.sizes)}。` });
+    return notes;
+  }
+  const missing = p.sizes.filter((s) => !d.sizes.includes(s));
+  const total = d.sizes.length + missing.length;
+  if (total > 8) {
+    notes.push({ bad: true, msg: `套用後規格會有 ${total} 個（目前${list(d.sizes)}，再加上${list(missing)}），超過上限 8 個，無法儲存。請改選「取代整份菜單」，或先在「店家設定」把規格改成跟檔案一樣。` });
+  } else if (missing.length === p.sizes.length) {
+    notes.push({ msg: `檔案的規格${list(p.sizes)}跟這家店的規格${list(d.sizes)}名稱都不一樣，價格會放到新增的${list(missing)}欄位，原本${list(d.sizes)}的價格會是空的。建議改選「取代整份菜單」，或先在「店家設定」把規格名稱改成跟檔案一樣。` });
+  } else if (missing.length) {
+    notes.push({ msg: `檔案有這家店還沒有的規格${list(missing)}，套用後會自動新增這些規格欄位。` });
+  }
+  return notes;
 }
 
 function parsedMenu(md) {
@@ -723,7 +765,9 @@ const actions = {
     }
     S.armed = null;
     const [kind, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
-    if (kind === 'delShop') {
+    if (kind === 'delSession') {
+      run(() => S.backend.deleteSession(SPACE, id), '已刪除這個團').then((ok) => { if (ok) { S.sid = null; S.f = newForm(); reconcile(); render(); } });
+    } else if (kind === 'delShop') {
       run(() => S.backend.deleteShop(SPACE, id), '已刪除店家').then((ok) => { if (ok) { S.menu.dirty = false; S.menu.selId = null; reconcile(); render(); } });
     } else if (kind === 'delUnit') {
       editRoster((d) => d.splice(d.findIndex((u) => u.key === id), 1));
@@ -814,11 +858,27 @@ const actions = {
     if (!S.who.name.trim()) return toast('請先選擇或輸入你的姓名', 'err');
     if (!f.item) return toast('請選一杯飲料', 'err');
     if (!f.size) return toast('這個規格沒有販售，請換一個規格', 'err');
-    const fields = orderFields({ ...f, toppings: f.tops });
-    const ok = f.editId
-      ? await run(() => S.backend.updateOrder(SPACE, f.editId, fields), '已更新訂單')
-      : await run(() => S.backend.addOrder(SPACE, cur.id, fields, f.qty), (r) => `已加入 ${r.count} 杯：${drinkLabel({ ...fields, toppings: fields.toppings.map((n) => ({ n })) })}`);
-    if (ok) { S.f = { ...newForm(), q: f.q }; render(); }
+    const shop = shopOf(cur);
+    const it = shop.items.find((i) => i.n === f.item);
+    const tops = shop.toppings.filter((t) => f.tops.includes(t.n));
+    const price = it.p[shop.sizes.indexOf(f.size)] + tops.reduce((s, t) => s + t.p, 0);
+    // 先跳出確認視窗，按「確定送出」才寫入
+    S.modal = {
+      type: 'confirmOrder', from: 'form', editId: f.editId, qty: f.editId ? 1 : f.qty, price,
+      fields: orderFields({ ...f, toppings: f.tops }), label: drinkLabel({ ...f, toppings: tops, note: f.note.trim() }),
+    };
+    render();
+  },
+  async confirmOrderGo() {
+    const md = S.modal;
+    const cur = current();
+    const ok = md.editId
+      ? await run(() => S.backend.updateOrder(SPACE, md.editId, md.fields), '已更新訂單')
+      : await run(() => S.backend.addOrder(SPACE, cur.id, md.fields, md.qty), `已加入 ${md.qty} 杯：${md.label}`);
+    if (!ok) return;
+    S.modal = null;
+    if (md.from === 'form') S.f = { ...newForm(), q: S.f.q };
+    render();
   },
   cancelEdit() { S.f = { ...newForm(), q: S.f.q }; render(); },
   loadFav(el) {
@@ -835,8 +895,8 @@ const actions = {
     const fav = favsFor(S.who.name.trim(), S.data.orders, shopOf(cur))[Number(el.dataset.i)];
     if (!fav) return;
     if (!S.who.name.trim()) return toast('請先選擇你的姓名', 'err');
-    const n = S.favQty;
-    await run(() => S.backend.addOrder(SPACE, cur.id, orderFields(fav), n), `已再訂 ${n} 杯：${drinkLabel(fav)}`);
+    S.modal = { type: 'confirmOrder', from: 'fav', editId: null, qty: S.favQty, price: fav.price, fields: orderFields(fav), label: drinkLabel(fav) };
+    render();
   },
   editOrder(el) {
     const o = S.data.orders.find((x) => x.id === el.dataset.id);

@@ -24,12 +24,12 @@
 ## 安全規則
 - 資料表不開放網頁直接讀寫，所有讀寫都透過資料庫函式並出示空間代號。
 - 杯價由資料庫依菜單計算（含加料）；團結束後訂單不能再新增、修改或刪除。
-- 團不能刪除，只能「結束訂購」，訂單紀錄會一直保留。
+- 只有「已結束」的團可以刪除（按兩次確認，訂單一併刪除）；訂購送出前會跳出確認視窗。
 - 頁面設定 `no-referrer`，空間代號不會透過連結來源外洩給其他網站。
 
 ## 設定
 可與其他系統共用同一個 Supabase 專案（本系統資料表以 `ds_` 開頭）。
-1. **SQL Editor** → **New query** → 貼上 [`supabase/setup.sql`](supabase/setup.sql) → **Run**。
+1. **SQL Editor** → **New query** → 貼上 [`supabase/setup.sql`](supabase/setup.sql) → **Run**。（2026-10-15 以前建立的，另外執行一次 [`upgrade-01-delete-closed-session.sql`](supabase/upgrade-01-delete-closed-session.sql)）
 2. [`js/config.js`](js/config.js) 填入 Project URL 與 publishable（anon）key。
 3. 倉庫 **Settings** → **Pages** → Branch `main`、`/ (root)`。
 

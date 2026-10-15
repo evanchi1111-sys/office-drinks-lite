@@ -249,7 +249,7 @@ export function parseMenu(text) {
     if (r.length === 1 && p.every((x) => x === null)) continue; // 分類標題列
     items.push({ n, p });
   }
-  return { sizes, items };
+  return { sizes, items, header: looksHeader };
 }
 
 export function applyMenu(existing, parsed, mode) {

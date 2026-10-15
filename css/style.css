@@ -238,3 +238,11 @@ h3.row-h { margin-bottom: .6rem; }
 .danger-zone { margin-top: 18px; border-top: 1px dashed var(--line); padding-top: 10px; }
 .danger-zone summary { color: var(--danger); cursor: pointer; min-height: 32px; font-weight: 500; }
 input[readonly] { background: var(--surface); }
+/* ---------- 送出前確認 ---------- */
+.confirm-list { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 8px 0 0; background: var(--surface); border-radius: 10px; padding: 14px; }
+.confirm-list dt { color: var(--muted); font-size: .9rem; }
+.confirm-list dd { margin: 0; font-weight: 500; }
+.confirm-list .money { font-size: 1.15rem; }
+.confirm-list small { color: var(--muted); font-weight: 400; margin-left: 4px; }
+.warn { background: var(--accent-soft); color: var(--accent); border-radius: 10px; padding: 8px 12px; margin: 8px 0; font-size: .9rem; }
+.warn.bad { background: var(--danger-soft); color: var(--danger); }
