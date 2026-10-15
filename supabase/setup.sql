@@ -389,7 +389,7 @@ begin
   end loop;
   -- 先刪掉清單裡沒有的單位，再把留下的單位改成暫時名稱，避免改名互換或同名新增時撞到 unique
   delete from public.ds_units where space_id = p_space
-    and id not in (select x->>'id' from jsonb_array_elements(p_units) x where x->>'id' is not null);
+    and id not in (select elem->>'id' from jsonb_array_elements(p_units) elem where elem->>'id' is not null);
   update public.ds_units set name = '~' || id where space_id = p_space;
   for x in select * from jsonb_array_elements(p_units) loop
     n := public.ds__txt(x->'name', 60);
