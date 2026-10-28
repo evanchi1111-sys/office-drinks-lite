@@ -3,6 +3,7 @@ import {
   SUGAR_OPTIONS, ICE_OPTIONS, esc, formatPrice, aggregate, totalOf, expectedPeople, groupByUnit, pendingPeople,
   drinkLabel, summaryText, detailText, favsFor, sheetHTML, parseMenu, parseToppingsText, mergeToppings, applyMenu,
   parseRoster, mergeRoster, readTextFile, menuToCSV, splitMenuSections, rosterToCSV,
+  KIND_ICON, KIND_LABEL, KIND_UNIT, kindOf, emojiFor, sessionShopIds, orderShopId, groupByShop, countText,
 } from './logic.js';
 
 const params = new URLSearchParams(location.search);
@@ -32,8 +33,8 @@ function rememberSpace(id, name) {
 function forgetSpace(id) {
   store.set(RECENT_KEY, JSON.stringify(recentSpaces().filter((x) => x.id !== id)));
 }
-const newForm = () => ({ item: '', size: '', sugar: '正常糖', ice: '正常冰', tops: [], note: '', qty: 1, editId: null, q: '', custom: false, cItem: '', cPrice: '' });
-const defaultTitle = () => { const d = new Date(); return `${d.getMonth() + 1}/${d.getDate()} 飲料團`; };
+const newForm = () => ({ shopId: '', cat: '', item: '', size: '', sugar: '正常糖', ice: '正常冰', tops: [], note: '', qty: 1, editId: null, q: '', custom: false, cItem: '', cPrice: '' });
+const defaultTitle = () => { const d = new Date(); return `${d.getMonth() + 1}/${d.getDate()} 訂購團`; };
 const demoQ = DEMO ? '&demo' : '';
 const spaceUrl = (id) => `${location.origin}${location.pathname}?space=${encodeURIComponent(id)}${demoQ}`;
 
@@ -52,7 +53,7 @@ const S = {
   armed: null,
   busy: false,
   home: { name: '' },
-  menu: { selId: null, draft: null, dirty: false, newName: '', newPhone: '', filter: '', topPaste: '' },
+  menu: { selId: null, draft: null, dirty: false, newName: '', newPhone: '', newKind: 'drink', filter: '', topPaste: '' },
   roster: { draft: null, dirty: false, newUnit: '', add: {} },
 };
 
@@ -96,7 +97,19 @@ function current() {
   const list = sessions();
   return list.find((s) => s.id === S.sid) ?? list.find((s) => s.status === 'open') ?? list[0];
 }
-const shopOf = (session) => S.data?.shops.find((s) => s.id === session?.shop_id);
+const allShops = () => S.data?.shops ?? [];
+// 這個團的店家（主要店家在前），已被刪除的不列出
+const sessionShops = (session) => (session ? sessionShopIds(session).map((id) => allShops().find((s) => s.id === id)).filter(Boolean) : []);
+const shopNames = (session) => sessionShopIds(session)
+  .map((id) => allShops().find((s) => s.id === id)?.name ?? (id === session.shop_id ? session.shop_name : null)).filter(Boolean).join('＋');
+// 訂購頁目前選的店家（沒選過就是主要店家）
+const shopOf = (session) => { const list = sessionShops(session); return list.find((s) => s.id === S.f.shopId) ?? list[0]; };
+// 一個團有多家店時，在訂單後面標示是哪一家
+const shopTag = (o, session) => {
+  if (sessionShopIds(session).length < 2) return '';
+  const sh = allShops().find((s) => s.id === orderShopId(o, session));
+  return ` <span class="shop-tag">${KIND_ICON[kindOf(sh)]} ${esc(sh?.name ?? '已刪除的店')}</span>`;
+};
 const sessionOrders = (session) => (S.data?.orders ?? []).filter((o) => o.session_id === session?.id);
 const allPeople = (units) => units.flatMap((u) => u.members.map((name) => ({ unit: u.name, name })));
 
@@ -141,7 +154,7 @@ async function refresh() {
         S.data = await S.backend.load(SPACE);
         S.error = null;
         rememberSpace(SPACE, S.data.space.name);
-        document.title = `${S.data.space.name}・飲料訂購`;
+        document.title = `${S.data.space.name}・飲料餐點訂購`;
         reconcile();
       } while (again);
     } catch (e) {
@@ -169,8 +182,8 @@ function reconcile() {
 }
 
 const toDraft = (s) => s && {
-  name: s.name, phone: s.phone, sizes: [...s.sizes],
-  items: s.items.map((i) => ({ key: nk(), n: i.n, p: [...i.p] })),
+  name: s.name, phone: s.phone, kind: s.kind, sizes: [...s.sizes],
+  items: s.items.map((i) => ({ key: nk(), n: i.n, p: [...i.p], c: i.c ?? '' })),
   toppings: s.toppings.map((t) => ({ key: nk(), ...t })),
 };
 
@@ -226,6 +239,9 @@ function confirmBtn(key, label, confirmLabel, attrs = '', cls = 'danger') {
   return `<button type="button" class="btn ${armed ? 'danger-solid' : cls} sm" data-act="confirm" data-key="${esc(key)}" ${attrs}>${esc(armed ? confirmLabel : label)}</button>`;
 }
 
+const kindChips = (bind, value, dirty = '') => `<div class="chips">${['drink', 'meal'].map((k) =>
+  `<button type="button" class="chip ${k === value ? 'on' : ''}" data-act="pick" data-bind="${bind}" data-v="${k}" ${dirty ? `data-dirty="${dirty}"` : ''} aria-pressed="${k === value}">${KIND_ICON[k]} ${KIND_LABEL[k]}店</button>`).join('')}</div>`;
+
 const chips = (bind, options, value, disabled = []) =>
   `<div class="chips">${options.map((o) => `<button type="button" class="chip ${o === value ? 'on' : ''}" data-act="pick" data-bind="${bind}" data-v="${esc(o)}" ${disabled.includes(o) ? 'disabled' : ''} aria-pressed="${o === value}">${esc(o)}</button>`).join('')}</div>`;
 
@@ -235,7 +251,7 @@ function viewApp() {
   if (!SPACE) return viewHome();
   if (S.missing) return viewMissing();
   const head = `<header class="top">
-    <div class="brand"><span class="logo" aria-hidden="true">🧋</span><div><h1>${esc(S.data?.space.name ?? '飲料訂購')}</h1><a class="home-link" href="./${DEMO ? '?demo&home' : ''}">飲料訂購・專屬連結版</a></div></div>
+    <div class="brand"><span class="logo" aria-hidden="true">🧋</span><div><h1>${esc(S.data?.space.name ?? '飲料訂購')}</h1><a class="home-link" href="./${DEMO ? '?demo&home' : ''}">飲料餐點訂購・專屬連結版</a></div></div>
     <div class="top-r">${liveDot}${S.data ? btn('spaceInfo', '🔑 空間連結', { cls: 'ghost sm' }) : ''}</div>
   </header>`;
   if (!S.data) {
@@ -260,8 +276,8 @@ function viewHome() {
   return `<header class="top"><div class="brand"><span class="logo" aria-hidden="true">🧋</span><h1>飲料訂購</h1></div>
       ${DEMO ? '<div class="top-r"><span class="live demo">示範模式</span></div>' : ''}</header>
     <section class="card hero">
-      <h2>公司、部門團購飲料，一個連結搞定</h2>
-      <p>建立一個屬於你們的「訂購空間」，會得到一個專屬連結。把連結分享給同事，大家就能開團、點飲料、管理菜單與名單，<b>不用帳號密碼</b>。</p>
+      <h2>公司、部門團購飲料與餐點，一個連結搞定</h2>
+      <p>建立一個屬於你們的「訂購空間」，會得到一個專屬連結。把連結分享給同事，大家就能開團、點飲料點餐點、管理菜單與名單，<b>不用帳號密碼</b>。</p>
       <p>每個空間的資料完全分開，沒有連結的人看不到。</p>
     </section>
     <section class="card">
@@ -295,7 +311,7 @@ function viewMissing() {
 
 function viewSessionBar(cur) {
   const list = sessions();
-  const opts = list.map((s) => `<option value="${esc(s.id)}" ${s.id === cur?.id ? 'selected' : ''}>${esc(s.title)}・${esc(s.shop_name)}${s.status === 'closed' ? '（已結束）' : ''}</option>`).join('');
+  const opts = list.map((s) => `<option value="${esc(s.id)}" ${s.id === cur?.id ? 'selected' : ''}>${esc(s.title)}・${esc(shopNames(s))}${s.status === 'closed' ? '（已結束）' : ''}</option>`).join('');
   return `<section class="bar">
     <div class="bar-pick">
       <select data-change="session" aria-label="選擇團" ${list.length ? '' : 'disabled'}>${list.length ? opts : '<option>還沒有任何團</option>'}</select>
@@ -304,6 +320,7 @@ function viewSessionBar(cur) {
     ${cur ? `<div class="bar-actions">
       <span class="badge ${cur.status === 'open' ? 'ok' : ''}">${cur.status === 'open' ? '訂購中' : '已結束'}</span>
       ${btn('share', '🔗 複製分享連結', { cls: 'sm' })}
+      ${btn('editShops', `🏪 店家（${sessionShopIds(cur).length}）`, { cls: 'sm' })}
       ${btn('editParticipants', `👥 參加成員${cur.participants ? `（${cur.participants.length} 人）` : '（全部）'}`, { cls: 'sm' })}
       ${cur.status === 'open' ? btn('close', '結束訂購', { cls: 'sm', disabled: S.busy }) : btn('reopen', '重新開放', { cls: 'sm', disabled: S.busy })}
       ${cur.status === 'closed' ? confirmBtn(`delSession:${cur.id}`, '🗑️ 刪除這個團', '再按一次刪除（訂單一併刪除）') : ''}
@@ -324,11 +341,15 @@ function viewPending(groups, pickable) {
 
 function viewOrder(session) {
   const shop = shopOf(session);
-  if (!shop) return '<p class="empty">這個團的飲料店已被刪除，請重新開一團。</p>';
+  if (!shop) return '<p class="empty">這個團的店家已被刪除，請重新開一團。</p>';
   const { units, orders: all } = S.data;
   const open = session.status === 'open';
   const restricted = !!session.participants;
   const f = S.f;
+  const kind = kindOf(shop);
+  const label = KIND_LABEL[kind];
+  const unit = KIND_UNIT[kind];
+  const shopList = sessionShops(session);
   const expected = expectedPeople(session, units);
   const selectable = units.filter((u) => expected.some((p) => p.unit === u.name));
   const unitObj = selectable.find((u) => u.name === S.who.unit);
@@ -345,8 +366,21 @@ function viewOrder(session) {
   const price = base != null ? base + chosenTops.reduce((s, t) => s + t.p, 0) : null;
   const missing = itemObj ? shop.sizes.filter((_, i) => itemObj.p[i] == null) : [];
   const q = f.q.trim().toLowerCase();
-  const filtered = q ? shop.items.filter((i) => i.n.toLowerCase().includes(q)) : shop.items;
+  const cats = [...new Set(shop.items.map((i) => i.c).filter(Boolean))];
+  const cat = cats.includes(f.cat) ? f.cat : '';
+  const filtered = shop.items.filter((i) => (!q || i.n.toLowerCase().includes(q)) && (!cat || i.c === cat));
+  const itemRow = (i) => `<li><button type="button" class="menu-item ${f.item === i.n ? 'on' : ''}" data-act="pickItem" data-v="${esc(i.n)}">
+          <span class="em" aria-hidden="true">${emojiFor(i.n, kind)}</span>
+          <span class="nm">${esc(i.n)}</span>
+          <span class="prices">${shop.sizes.map((s, k) => (i.p[k] != null ? `${esc(s)} $${i.p[k]}` : null)).filter(Boolean).join(' / ')}</span>
+        </button></li>`;
+  // 有分類且沒有指定某一類時，品項依分類分段顯示
+  const menuRows = cats.length && !cat
+    ? [...new Set(filtered.map((i) => i.c || '其他'))]
+        .map((k) => `<li class="cat-h">${esc(k)}</li>${filtered.filter((i) => (i.c || '其他') === k).map(itemRow).join('')}`).join('')
+    : filtered.map(itemRow).join('');
   const tel = shop.phone ? `・<a href="tel:${esc(shop.phone.split(/[；;、,]/)[0].replace(/[^\d+#*]/g, ''))}">${esc(shop.phone)}</a>` : '';
+  const topWord = kind === 'meal' ? '加購' : '加料';
 
   return `
     ${open ? '' : '<div class="closed">這個團已結束訂購，只能查看。需要加點請按上方「重新開放」。</div>'}
@@ -370,57 +404,56 @@ function viewOrder(session) {
     </section>
 
     ${favs.length && open ? `<section class="card">
-      <h3 class="row-h">常點的（一鍵再訂）${stepper('favQty', S.favQty, '再訂杯數')}</h3>
+      <h3 class="row-h">常點的（一鍵再訂）${stepper('favQty', S.favQty, `再訂${unit}數`)}</h3>
       <ul class="favs">${favs.map((x, i) => `<li>
         <button type="button" class="fav-text" data-act="loadFav" data-i="${i}" title="帶入下方表單修改">
           <span class="fav-name">${esc(drinkLabel(x))}</span><span class="fav-meta">$${x.price}・點過 ${x.count} 次</span>
         </button>
-        ${btn('reorder', `↻ 再訂${S.favQty > 1 ? ` ${S.favQty} 杯` : '一杯'}`, { cls: 'primary sm', attrs: `data-i="${i}"`, disabled: S.busy })}
+        ${btn('reorder', `↻ 再訂${S.favQty > 1 ? ` ${S.favQty} ${unit}` : `一${unit}`}`, { cls: 'primary sm', attrs: `data-i="${i}"`, disabled: S.busy })}
       </li>`).join('')}</ul>
     </section>` : ''}
 
     <section class="card" id="drink">
-      <h3 class="row-h">2. 選飲料${f.editId ? '（修改中）' : ''}<span class="shop">${esc(session.shop_name)}${tel}</span></h3>
+      ${shopList.length > 1 ? `<div class="shoptabs" role="group" aria-label="選擇店家">${shopList.map((s) => `<button type="button" class="chip ${s.id === shop.id ? 'on' : ''}" data-act="pickShop" data-v="${esc(s.id)}" aria-pressed="${s.id === shop.id}" ${f.editId ? 'disabled' : ''}>${KIND_ICON[kindOf(s)]} ${esc(s.name)}</button>`).join('')}</div>` : ''}
+      <h3 class="row-h">2. 選${label}${f.editId ? '（修改中）' : ''}<span class="shop">${shopList.length > 1 ? tel.slice(1) : esc(shop.name) + tel}</span></h3>
       <input type="search" class="search" data-k="q" data-bind="f.q" data-rerender placeholder="🔍 搜尋品名" value="${esc(f.q)}">
+      ${cats.length ? `<div class="chips cats">${['', ...cats].map((c) => `<button type="button" class="chip sm ${c === cat ? 'on' : ''}" data-act="pickCat" data-v="${esc(c)}" aria-pressed="${c === cat}">${c ? esc(c) : '全部'}</button>`).join('')}</div>` : ''}
       <ul class="menu" data-scroll="menu">
-        ${filtered.map((i) => `<li><button type="button" class="menu-item ${f.item === i.n ? 'on' : ''}" data-act="pickItem" data-v="${esc(i.n)}">
-          <span>${esc(i.n)}</span>
-          <span class="prices">${shop.sizes.map((s, k) => (i.p[k] != null ? `${esc(s)} $${i.p[k]}` : null)).filter(Boolean).join(' / ')}</span>
-        </button></li>`).join('')}
-        ${filtered.length ? '' : '<li class="empty">找不到符合的飲料</li>'}
+        ${menuRows}
+        ${filtered.length ? '' : `<li class="empty">找不到符合的${label}</li>`}
       </ul>
       ${f.custom ? '' : `<div class="custom-entry">${btn('customItem', '✏️ 菜單上沒有？自己輸入（季節限定等）', { cls: 'sm' })}</div>`}
       ${f.item || f.custom ? `<div class="opts">
         ${f.custom
           ? `<div class="custom-box">
-              <div class="row-h"><b class="picked">自己輸入的飲料</b>${btn('cancelCustom', '改選菜單', { cls: 'ghost sm' })}</div>
-              <label class="lbl">飲料名稱</label>
-              <input type="text" data-k="cItem" data-bind="f.cItem" data-rerender maxlength="100" placeholder="例如：楊枝甘露（季節限定）" value="${esc(f.cItem)}">
-              <label class="lbl">單杯價格（不含加料，請照店家菜單填）</label>
+              <div class="row-h"><b class="picked">自己輸入的${label}</b>${btn('cancelCustom', '改選菜單', { cls: 'ghost sm' })}</div>
+              <label class="lbl">${label}名稱</label>
+              <input type="text" data-k="cItem" data-bind="f.cItem" data-rerender maxlength="100" placeholder="${kind === 'meal' ? '例如：芒果千層（季節限定）' : '例如：楊枝甘露（季節限定）'}" value="${esc(f.cItem)}">
+              <label class="lbl">單價（不含${topWord}，請照店家菜單填）</label>
               <input type="text" inputmode="numeric" data-k="cPrice" data-cprice placeholder="例如：65" value="${esc(f.cPrice)}">
             </div>`
           : `<div class="picked">已選：${esc(f.item)}</div>`}
-        <label class="lbl">規格</label>${chips('f.size', shop.sizes, f.size, missing)}
-        <label class="lbl">甜度</label>${chips('f.sugar', SUGAR_OPTIONS, f.sugar)}
-        <label class="lbl">冰量</label>${chips('f.ice', ICE_OPTIONS, f.ice)}
-        ${shop.toppings.length ? `<label class="lbl">加料（可多選）</label><div class="chips">${shop.toppings.map((t) => {
+        <label class="lbl">${kind === 'meal' ? '份量／口味' : '規格'}</label>${chips('f.size', shop.sizes, f.size, missing)}
+        ${kind === 'drink' ? `<label class="lbl">甜度</label>${chips('f.sugar', SUGAR_OPTIONS, f.sugar)}
+        <label class="lbl">冰量</label>${chips('f.ice', ICE_OPTIONS, f.ice)}` : ''}
+        ${shop.toppings.length ? `<label class="lbl">${topWord}（可多選）</label><div class="chips">${shop.toppings.map((t) => {
           const on = f.tops.includes(t.n);
           return `<button type="button" class="chip ${on ? 'on' : ''}" data-act="toggleTop" data-v="${esc(t.n)}" aria-pressed="${on}">${esc(t.n)}${t.p > 0 ? ` +$${t.p}` : ''}</button>`;
         }).join('')}</div>` : ''}
         <label class="lbl">備註（選填）</label>
-        <input type="text" data-k="note" data-bind="f.note" maxlength="100" placeholder="例如：不要吸管" value="${esc(f.note)}">
+        <input type="text" data-k="note" data-bind="f.note" maxlength="100" placeholder="${kind === 'meal' ? '例如：不要辣、不要香菜' : '例如：不要吸管'}" value="${esc(f.note)}">
         <div class="submit-row">
           <div class="price">${price != null ? `$${price * (f.editId ? 1 : f.qty)}` : '—'}${!f.editId && f.qty > 1 && price != null ? `<small> $${price} × ${f.qty}</small>` : ''}</div>
-          ${f.editId ? btn('cancelEdit', '取消修改') : stepper('f.qty', f.qty, '杯數')}
-          ${btn('submitOrder', f.editId ? '儲存修改' : f.qty > 1 ? `加入 ${f.qty} 杯` : '加入訂單', { cls: 'primary lg', disabled: !open || S.busy })}
+          ${f.editId ? btn('cancelEdit', '取消修改') : stepper('f.qty', f.qty, `${unit}數`)}
+          ${btn('submitOrder', f.editId ? '儲存修改' : f.qty > 1 ? `加入 ${f.qty} ${unit}` : '加入訂單', { cls: 'primary lg', disabled: !open || S.busy })}
         </div>
       </div>` : ''}
     </section>
 
     ${name ? `<section class="card">
-      <h3>${esc(name)} 在這團的訂單（${mine.length} 杯）</h3>
+      <h3 id="myorders">${esc(name)} 在這團的訂單（${esc(countText(mine, session, allShops()))}）</h3>
       ${mine.length ? `<ul class="list">${mine.map((o) => `<li>
-        <span class="grow">${esc(drinkLabel(o))}${customTag(o)} <b class="money">${o.price != null ? `$${o.price}` : ''}</b></span>
+        <span class="grow">${esc(drinkLabel(o))}${customTag(o)}${shopTag(o, session)} <b class="money">${o.price != null ? `$${o.price}` : ''}</b></span>
         ${open ? `${btn('editOrder', '✏️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="修改"` })}${btn('delOrder', '🗑️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="刪除"`, disabled: S.busy })}` : ''}
       </li>`).join('')}</ul>` : '<p class="empty">還沒有訂單</p>'}
     </section>` : ''}`;
@@ -434,17 +467,20 @@ const stepper = (bind, value, label) => `<span class="stepper" aria-label="${esc
 
 function viewSummary(session) {
   const { units } = S.data;
+  const shops = allShops();
   const orders = sessionOrders(session);
   const pending = pendingPeople(orders, units, session);
   const open = session.status === 'open';
-  if (!orders.length) return `<p class="empty">這團還沒有人訂飲料。</p>${pending.length ? viewPending(pending, false) : ''}`;
-  const agg = aggregate(orders);
+  if (!orders.length) return `<p class="empty">這團還沒有人訂。</p>${pending.length ? viewPending(pending, false) : ''}`;
+  const byShop = groupByShop(orders, session, shops).filter((g) => g.orders.length);
+  const multi = byShop.length > 1;
   const groups = groupByUnit(orders, units, session).filter((g) => g.orders.length > 0);
   return `<section class="card">
-      <div class="row-h"><h3>品項彙總</h3><div class="total">${orders.length} 杯・$${totalOf(orders)}</div></div>
-      <ul class="list">${agg.map((r) => `<li><span class="grow">${esc(drinkLabel(r))}</span><span class="cnt">× ${r.count}</span><span class="money">$${r.total}</span></li>`).join('')}</ul>
+      <div class="row-h"><h3>品項彙總</h3><div class="total">${esc(countText(orders, session, shops))}・$${totalOf(orders)}</div></div>
+      ${byShop.map((g) => `${multi ? `<div class="row-h shop-h"><b>${KIND_ICON[g.kind]} ${esc(g.name)}</b><span class="sub">${g.orders.length} ${KIND_UNIT[g.kind]}・$${totalOf(g.orders)}</span></div>` : ''}
+      <ul class="list">${aggregate(g.orders).map((r) => `<li><span class="grow">${esc(drinkLabel(r))}</span><span class="cnt">× ${r.count}</span><span class="money">$${r.total}</span></li>`).join('')}</ul>`).join('')}
       <div class="btns">
-        ${btn('copySummary', '📋 複製彙總（給店家）', { cls: 'sm' })}
+        ${btn('copySummary', `📋 複製彙總（給店家${multi ? '，每家一段' : ''}）`, { cls: 'sm' })}
         ${btn('copyDetail', '📋 複製明細（Excel）', { cls: 'sm' })}
         ${btn('printSheet', '🖨️ 列印分發單', { cls: 'primary sm' })}
         ${btn('downloadSheet', '⬇️ 下載分發單', { cls: 'sm' })}
@@ -452,9 +488,9 @@ function viewSummary(session) {
     </section>
     ${pending.length ? viewPending(pending, false) : ''}
     ${groups.map((g) => `<section class="card">
-      <div class="row-h"><h3>${esc(g.unit)}</h3><div class="sub">${g.orders.length} 杯・$${totalOf(g.orders)}</div></div>
+      <div class="row-h"><h3>${esc(g.unit)}</h3><div class="sub">${esc(countText(g.orders, session, shops))}・$${totalOf(g.orders)}</div></div>
       <ul class="list">${g.orders.map((o) => `<li>
-        <span class="who-n">${esc(o.name)}</span><span class="grow">${esc(drinkLabel(o))}${customTag(o)}</span><span class="money">${o.price != null ? `$${o.price}` : ''}</span>
+        <span class="who-n">${esc(o.name)}</span><span class="grow">${esc(drinkLabel(o))}${customTag(o)}${shopTag(o, session)}</span><span class="money">${o.price != null ? `$${o.price}` : ''}</span>
         ${open ? btn('delOrder', '🗑️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="刪除"`, disabled: S.busy }) : ''}
       </li>`).join('')}</ul>
     </section>`).join('')}`;
@@ -467,10 +503,11 @@ function viewMenu() {
   const k = m.filter.trim().toLowerCase();
   const visible = d ? d.items.map((it, idx) => ({ it, idx })).filter(({ it }) => !k || it.n.toLowerCase().includes(k)) : [];
   return `<section class="card">
-      <h3>飲料店</h3>
-      ${shops.length ? `<select data-change="menuShop" aria-label="選擇店家">${shops.map((s) => `<option value="${esc(s.id)}" ${s.id === m.selId ? 'selected' : ''}>${esc(s.name)}${s.phone ? `・${esc(s.phone)}` : ''}（${s.items.length} 品項）</option>`).join('')}</select>` : ''}
+      <h3>店家（飲料店、餐點店）</h3>
+      ${shops.length ? `<select data-change="menuShop" aria-label="選擇店家">${shops.map((s) => `<option value="${esc(s.id)}" ${s.id === m.selId ? 'selected' : ''}>${KIND_ICON[kindOf(s)]} ${esc(s.name)}${s.phone ? `・${esc(s.phone)}` : ''}（${s.items.length} 品項）</option>`).join('')}</select>` : ''}
       <div class="stack">
-        <input type="text" data-k="newShopName" data-bind="menu.newName" data-rerender maxlength="60" placeholder="新增店家名稱，例如：五十嵐" value="${esc(m.newName)}">
+        <input type="text" data-k="newShopName" data-bind="menu.newName" data-rerender maxlength="60" placeholder="新增店家名稱，例如：五十嵐、鹽酥雞攤" value="${esc(m.newName)}">
+        ${kindChips('menu.newKind', m.newKind)}
         <div class="add-row">
           <input type="tel" inputmode="tel" data-k="newShopPhone" data-bind="menu.newPhone" data-enter="addShop" maxlength="30" placeholder="店家電話（選填）" value="${esc(m.newPhone)}">
           ${btn('addShop', '＋ 新增', { cls: 'primary', disabled: !m.newName.trim() || S.busy })}
@@ -483,7 +520,9 @@ function viewMenu() {
       <input type="text" data-k="dName" data-bind="menu.draft.name" data-dirty="menu" maxlength="60" value="${esc(d.name)}">
       <label class="lbl">店家電話</label>
       <input type="tel" inputmode="tel" data-k="dPhone" data-bind="menu.draft.phone" data-dirty="menu" maxlength="30" placeholder="例如：04-2635-1234" value="${esc(d.phone)}">
-      <label class="lbl">規格欄位（例如 中杯、大杯）</label>
+      <label class="lbl">種類</label>
+      ${kindChips('menu.draft.kind', d.kind, 'menu')}
+      <label class="lbl">${d.kind === 'meal' ? '規格／份量欄位（例如 小份、大份；只有一種就寫「單點」）' : '規格欄位（例如 中杯、大杯）'}</label>
       <div class="sizes">
         ${d.sizes.map((s, i) => `<div class="size-box"><input type="text" data-k="size${i}" data-bind="menu.draft.sizes.${i}" data-dirty="menu" data-rerender maxlength="20" value="${esc(s)}">
           ${d.sizes.length > 1 ? btn('delSize', '✕', { cls: 'icon', attrs: `data-i="${i}" aria-label="刪除規格"` }) : ''}</div>`).join('')}
@@ -495,22 +534,24 @@ function viewMenu() {
         <div class="btns">${btn('importMenu', '⬆️ 匯入菜單', { cls: 'sm' })}${btn('exportMenu', '⬇️ 匯出菜單', { cls: 'sm', disabled: !d.items.length && !d.toppings.length })}${btn('addItem', '＋ 新增品項', { cls: 'sm' })}</div></div>
       ${d.items.length > 8 ? `<input type="search" class="search" data-k="menuFilter" data-bind="menu.filter" data-rerender placeholder="🔍 搜尋品項" value="${esc(m.filter)}">` : ''}
       ${d.items.length ? '' : '<p class="empty">還沒有品項，按「匯入菜單」或「新增品項」。</p>'}
+      <datalist id="catlist">${[...new Set(d.items.map((i) => i.c).filter(Boolean))].map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>
       <ul class="items">${visible.map(({ it, idx }) => `<li class="item">
         <div class="item-top"><input type="text" data-k="in-${it.key}" data-bind="menu.draft.items.${idx}.n" data-dirty="menu" maxlength="100" placeholder="品名" value="${esc(it.n)}">
           ${btn('delItem', '🗑️', { cls: 'icon', attrs: `data-i="${idx}" aria-label="刪除品項"` })}</div>
+        <div class="item-cat"><input type="text" data-k="ic-${it.key}" data-bind="menu.draft.items.${idx}.c" data-dirty="menu" maxlength="20" list="catlist" placeholder="分類（選填，例如：${d.kind === 'meal' ? '炸物、烤肉、蛋糕點心' : '奶茶類'}）" value="${esc(it.c)}"></div>
         <div class="item-prices">${d.sizes.map((s, si) => `<label class="pcell"><span>${esc(s)}</span>
           <input type="text" inputmode="numeric" data-k="ip-${it.key}-${si}" data-price="${idx}:${si}" placeholder="—" value="${it.p[si] ?? ''}"></label>`).join('')}</div>
       </li>`).join('')}</ul>
     </section>
     <section class="card">
-      <div class="row-h"><h3>加料（${d.toppings.length}）</h3>${btn('addTop', '＋ 新增加料', { cls: 'sm' })}</div>
-      <p class="hint">同事點餐時可多選；加價會自動算進杯價。沒有加價就填 0。</p>
+      <div class="row-h"><h3>${d.kind === 'meal' ? '加購' : '加料'}（${d.toppings.length}）</h3>${btn('addTop', d.kind === 'meal' ? '＋ 新增加購' : '＋ 新增加料', { cls: 'sm' })}</div>
+      <p class="hint">同事點餐時可多選；加價會自動算進單價。沒有加價就填 0。${d.kind === 'meal' ? '例如：加辣、加蛋、加起司。' : ''}</p>
       <ul class="items">${d.toppings.map((t, i) => `<li class="item"><div class="item-top">
         <input type="text" data-k="tn-${t.key}" data-bind="menu.draft.toppings.${i}.n" data-dirty="menu" maxlength="40" placeholder="加料名稱，例如：大珍珠" value="${esc(t.n)}">
         <input type="text" class="top-price" inputmode="numeric" data-k="tp-${t.key}" data-tprice="${i}" placeholder="加價" value="${t.p}">
         ${btn('delTop', '🗑️', { cls: 'icon', attrs: `data-i="${i}" aria-label="刪除加料"` })}
       </div></li>`).join('')}</ul>
-      <label class="lbl">一次貼上多個加料（每行一個：名稱 加價）</label>
+      <label class="lbl">一次貼上多個${d.kind === 'meal' ? '加購' : '加料'}（每行一個：名稱 加價）</label>
       <textarea rows="3" data-k="topPaste" data-bind="menu.topPaste" data-rerender placeholder="大珍珠 10&#10;小珍珠 10&#10;椰果 10">${esc(m.topPaste)}</textarea>
       <div>${btn('pasteTops', '加入這些加料', { cls: 'sm', disabled: !m.topPaste.trim() })}</div>
     </section>
@@ -569,6 +610,17 @@ function viewPicker(picked) {
   </div>`;
 }
 
+// 開團／調整店家共用：點選順序的第一家是主要店家
+function viewShopPicker(shopIds) {
+  const shops = S.data.shops;
+  if (!shops.length) return '<p class="hint">還沒有店家，請管理者先到「菜單」分頁新增飲料店或餐點店。</p>';
+  return `<div class="chips">${shops.map((s) => {
+    const on = shopIds.includes(s.id);
+    return `<button type="button" class="chip ${on ? 'on' : ''}" data-act="toggleShop" data-id="${esc(s.id)}" aria-pressed="${on}">${KIND_ICON[kindOf(s)]} ${esc(s.name)}</button>`;
+  }).join('')}</div>
+  <p class="hint">${shopIds.length > 1 ? `主要店家：${esc(shops.find((s) => s.id === shopIds[0])?.name ?? '')}（同事進來先看到的店）` : '再按其他店家，同一個團就能同時點飲料和餐點。'}</p>`;
+}
+
 function viewModal() {
   const md = S.modal;
   const shell = (title, desc, body, foot) => `<div class="overlay" data-act="overlay"><div class="dialog" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -594,24 +646,29 @@ function viewModal() {
   }
   if (md.type === 'newSession') {
     const shops = S.data.shops;
-    return shell('開新團', '選一家飲料店和這次參加的人，同事就能用連結點餐。',
+    return shell('開新團', '選店家（飲料店、餐點店都可以，也能同時選好幾家）和這次參加的人，同事就能用連結點餐。',
       `<label class="lbl">團名</label><input type="text" data-k="nsTitle" data-bind="modal.title" maxlength="60" value="${esc(md.title)}">
-      <label class="lbl">飲料店</label>
-      ${shops.length ? `<select data-change="nsShop">${shops.map((s) => `<option value="${esc(s.id)}" ${s.id === md.shopId ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>`
-        : '<p class="hint">還沒有飲料店，請管理者先到「菜單」分頁新增店家。</p>'}
+      <label class="lbl">店家（可複選）</label>
+      ${viewShopPicker(md.shopIds)}
       <label class="lbl">這次要訂的人</label>
       ${chips('modal.who', ['名單上所有人', '指定這次的成員'], md.who)}
       ${md.who === '指定這次的成員' ? viewPicker(md.picked) : ''}
-      <p class="hint">開團後，「訂購」和「彙總」會顯示這些人誰還沒選購飲料。</p>`,
-      btn('createSession', '開團', { cls: 'primary', disabled: S.busy || !shops.length }));
+      <p class="hint">開團後，「訂購」和「彙總」會顯示這些人誰還沒訂。</p>`,
+      btn('createSession', '開團', { cls: 'primary', disabled: S.busy || !shops.length || !md.shopIds.length }));
+  }
+  if (md.type === 'shops') {
+    return shell('調整這個團的店家', '勾選這個團有哪些店家。已經有人訂的店家不能移除。',
+      viewShopPicker(md.shopIds),
+      btn('shopsSave', '儲存店家', { cls: 'primary', disabled: S.busy || !md.shopIds.length }));
   }
   if (md.type === 'confirmOrder') {
     const f = md.fields;
     return shell(md.editId ? '確認修改訂單' : '確認送出訂單', '請確認內容正確，按「確定送出」才會完成訂購。',
       `<dl class="confirm-list">
         <dt>訂購人</dt><dd>${esc(f.unit ? `${f.unit}・${f.name}` : f.name)}</dd>
-        <dt>飲料</dt><dd>${esc(md.label)}${md.custom ? ' <span class="tag">自填</span>' : ''}</dd>
-        <dt>杯數</dt><dd>${md.qty} 杯</dd>
+        ${md.shopName ? `<dt>店家</dt><dd>${esc(md.shopName)}</dd>` : ''}
+        <dt>${esc(md.kindLabel)}</dt><dd>${esc(md.label)}${md.custom ? ' <span class="tag">自填</span>' : ''}</dd>
+        <dt>${esc(md.unit)}數</dt><dd>${md.qty} ${esc(md.unit)}</dd>
         <dt>金額</dt><dd class="money">$${md.price * md.qty}${md.qty > 1 ? `<small>（$${md.price} × ${md.qty}）</small>` : ''}</dd>
       </dl>`,
       btn('closeModal', '返回修改') + btn('confirmOrderGo', S.busy ? '送出中…' : '確定送出', { cls: 'primary', attrs: 'autofocus', disabled: S.busy }));
@@ -624,11 +681,11 @@ function viewModal() {
     const p = parsedMenu(md);
     const notes = p ? importSizeNotes(p, S.menu.draft, md.mode) : [];
     const blocked = notes.some((n) => n.bad);
-    return shell('匯入菜單', '貼上文字或 Excel 儲存格（每行：品名、各規格價格），或上傳 CSV。第一行若是「品名、中杯、大杯」會當作規格名稱；用「匯出菜單」下載的檔案可以直接匯入（含加料）。',
+    return shell('匯入菜單', '貼上文字或 Excel 儲存格（每行：品名、各規格價格），或上傳 CSV。第一行若是「品名、中杯、大杯」會當作規格名稱；單獨一格的列（例如「炸物」「烤肉」）會當作分類標題，後面的品項歸到那一類；用「匯出菜單」下載的檔案可以直接匯入（含加料、分類）。',
       `<div>${btn('pickFile', '📄 上傳 CSV / 文字檔', { cls: 'sm', attrs: 'data-target="menuFile"' })}<input type="file" id="menuFile" hidden accept=".csv,.txt,.tsv,text/csv,text/plain" data-change="menuFile"></div>
-      <label class="lbl">飲料與價格</label>
-      <textarea rows="8" data-k="imText" data-bind="modal.text" data-rerender placeholder="品名,中杯,大杯&#10;珍珠奶茶,50,60&#10;四季春茶,30,35">${esc(md.text)}</textarea>
-      <label class="lbl">加料（每行一個：名稱 加價，沒寫價格視為免費）</label>
+      <label class="lbl">品項與價格</label>
+      <textarea rows="8" data-k="imText" data-bind="modal.text" data-rerender placeholder="品名,小份,大份&#10;炸物&#10;鹽酥雞,60,90&#10;烤肉&#10;豬五花串,35,">${esc(md.text)}</textarea>
+      <label class="lbl">加料／加購（每行一個：名稱 加價，沒寫價格視為免費）</label>
       <textarea rows="4" data-k="imTops" data-bind="modal.topText" data-rerender placeholder="大珍珠 10&#10;小珍珠 10&#10;椰果 10">${esc(md.topText)}</textarea>
       ${p ? `<div class="preview">讀到 <b>${p.items.length}</b> 個品項、<b>${p.toppings.length}</b> 種加料；規格：${esc(p.sizes.join('、'))}
         ${p.items.slice(0, 3).map((i) => `<div class="pv">${esc(i.n)} — ${i.p.map((x) => formatPrice(x)).join(' / ')}</div>`).join('')}</div>` : ''}
@@ -711,14 +768,16 @@ function editRoster(fn) {
 
 // ---------------------------------------------------------------- 操作
 
-function orderFields(o) {
+function orderFields(o, shop) {
   const cur = current();
   const expected = expectedPeople(cur, S.data.units);
   const isRosterUnit = S.data.units.some((u) => u.name === S.who.unit && expected.some((p) => p.unit === u.name));
+  const meal = kindOf(shop) === 'meal';
   return {
+    shop_id: shop.id,
     unit: isRosterUnit ? S.who.unit : '',
     name: S.who.name.trim(),
-    item: o.item, size: o.size, sugar: o.sugar, ice: o.ice, note: (o.note ?? '').trim(),
+    item: o.item, size: o.size, sugar: meal ? '' : o.sugar, ice: meal ? '' : o.ice, note: (o.note ?? '').trim(),
     toppings: o.toppings.map((t) => (typeof t === 'string' ? t : t.n)),
     // 自行輸入的品項：價格由訂購人填（不含加料），其他品項價格由資料庫依菜單計算
     ...(o.custom ? { custom: true, price: o.price } : {}),
@@ -729,6 +788,41 @@ function orderFields(o) {
 function customPrice(f) {
   const n = parseInt(f.cPrice, 10);
   return n >= 1 && n <= 2000 ? n : null;
+}
+
+// 確認視窗要顯示的種類、單位；團裡有多家店時加上店名
+const modalKind = (session, shop, item) => ({
+  kindLabel: KIND_LABEL[kindOf(shop)], unit: KIND_UNIT[kindOf(shop)], shopName: sessionShopIds(session).length > 1 ? shop.name : '',
+  emoji: emojiFor(item, kindOf(shop)),
+});
+
+// 加入訂單後，食物圖示從選的位置拋物線飛到「我的訂單」，目標卡片彈一下
+function flyTo(rect, targetId, emoji) {
+  const el = document.getElementById(targetId);
+  if (!rect || !el || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const b = el.getBoundingClientRect();
+  const node = document.createElement('div');
+  node.className = 'fly';
+  node.setAttribute('aria-hidden', 'true');
+  node.textContent = emoji;
+  document.body.appendChild(node);
+  const x0 = rect.left + rect.width / 2 - 18;
+  const y0 = rect.top + rect.height / 2 - 18;
+  const x1 = b.left + 24;
+  const y1 = b.top + b.height / 2 - 18;
+  node.animate([
+    { transform: `translate(${x0}px, ${y0}px) scale(1)` },
+    { transform: `translate(${(x0 + x1) / 2}px, ${Math.min(y0, y1) - 90}px) scale(1.4)`, offset: 0.5 },
+    { transform: `translate(${x1}px, ${y1}px) scale(.5)`, opacity: 0.9 },
+  ], { duration: 650, easing: 'cubic-bezier(.4, 0, .3, 1)' }).onfinish = () => {
+    node.remove();
+    // 即時同步可能已經重畫畫面，所以重新找一次目標
+    const t = document.getElementById(targetId);
+    if (!t) return;
+    t.classList.remove('bump');
+    void t.offsetWidth;
+    t.classList.add('bump');
+  };
 }
 
 const customTag = (o) => (o.custom ? ' <span class="tag" title="菜單上沒有，品名與價格由訂購人填寫">自填</span>' : '');
@@ -798,6 +892,7 @@ const actions = {
   },
   pick(el) {
     setPath(el.dataset.bind, el.dataset.v);
+    if (el.dataset.dirty) S[el.dataset.dirty].dirty = true;
     render();
   },
   step(el) {
@@ -808,16 +903,30 @@ const actions = {
 
   // ---- 開團
   newSession() {
-    S.modal = { type: 'newSession', title: defaultTitle(), shopId: S.data.shops[0]?.id, who: '名單上所有人', picked: allPeople(S.data.units) };
+    S.modal = { type: 'newSession', title: defaultTitle(), shopIds: S.data.shops[0] ? [S.data.shops[0].id] : [], who: '名單上所有人', picked: allPeople(S.data.units) };
     render();
+  },
+  toggleShop(el) {
+    const id = el.dataset.id;
+    const ids = S.modal.shopIds;
+    S.modal.shopIds = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+    render();
+  },
+  editShops() {
+    const cur = current();
+    S.modal = { type: 'shops', shopIds: sessionShops(cur).map((s) => s.id) };
+    render();
+  },
+  async shopsSave() {
+    if (await run(() => S.backend.setShops(SPACE, current().id, S.modal.shopIds), '店家已更新')) { S.f = newForm(); S.modal = null; render(); }
   },
   async createSession() {
     const md = S.modal;
-    if (!md.shopId) return toast('請先選一家飲料店', 'err');
+    if (!md.shopIds.length) return toast('請先選一家店', 'err');
     if (!md.title.trim()) return toast('請輸入團名', 'err');
     const pick = md.who === '指定這次的成員';
     if (pick && !md.picked.length) return toast('請至少勾選一位成員，或改選「名單上所有人」', 'err');
-    const id = await run(() => S.backend.createSession(SPACE, md.title.trim(), md.shopId, pick ? md.picked : null), '已開團，可以分享連結給同事了');
+    const id = await run(() => S.backend.createSession(SPACE, md.title.trim(), md.shopIds, pick ? md.picked : null), '已開團，可以分享連結給同事了');
     if (id) { S.sid = id; S.modal = null; S.f = newForm(); S.tab = 'order'; reconcile(); render(); }
   },
   editParticipants() {
@@ -863,6 +972,11 @@ const actions = {
     toast(`已切換為 ${el.dataset.name}`);
     render();
   },
+  pickShop(el) {
+    Object.assign(S.f, { shopId: el.dataset.v, cat: '', q: '', item: '', size: '', sugar: '正常糖', ice: '正常冰', tops: [], note: '', custom: false, cItem: '', cPrice: '', editId: null });
+    render();
+  },
+  pickCat(el) { S.f.cat = el.dataset.v; render(); },
   pickItem(el) {
     const shop = shopOf(current());
     const it = shop.items.find((i) => i.n === el.dataset.v);
@@ -889,15 +1003,16 @@ const actions = {
     if (!S.who.name.trim()) return toast('請先選擇或輸入你的姓名', 'err');
     const shop = shopOf(cur);
     const tops = shop.toppings.filter((t) => f.tops.includes(t.n));
+    const kind = kindOf(shop);
     let item = f.item;
     let base;
     if (f.custom) {
       item = f.cItem.trim();
-      if (!item) return toast('請輸入飲料名稱', 'err');
+      if (!item) return toast('請輸入品名', 'err');
       base = customPrice(f);
-      if (base == null) return toast('請輸入這杯飲料的價格（1～2000 元）', 'err');
+      if (base == null) return toast('請輸入這個品項的價格（1～2000 元）', 'err');
     } else {
-      if (!item) return toast('請選一杯飲料', 'err');
+      if (!item) return toast(`請選一個${KIND_LABEL[kind]}`, 'err');
       if (!f.size) return toast('這個規格沒有販售，請換一個規格', 'err');
       base = shop.items.find((i) => i.n === item).p[shop.sizes.indexOf(f.size)];
     }
@@ -905,21 +1020,24 @@ const actions = {
     // 先跳出確認視窗，按「確定送出」才寫入
     S.modal = {
       type: 'confirmOrder', from: 'form', editId: f.editId, qty: f.editId ? 1 : f.qty, price, custom: f.custom,
-      fields: orderFields({ ...f, item, toppings: f.tops, custom: f.custom, price: base }),
-      label: drinkLabel({ ...f, item, toppings: tops, note: f.note.trim() }),
+      fields: orderFields({ ...f, item, toppings: f.tops, custom: f.custom, price: base }, shop),
+      label: drinkLabel({ ...f, item, sugar: kind === 'meal' ? '' : f.sugar, ice: kind === 'meal' ? '' : f.ice, toppings: tops, note: f.note.trim() }),
+      ...modalKind(cur, shop, item),
     };
     render();
   },
   async confirmOrderGo() {
     const md = S.modal;
     const cur = current();
+    const from = (document.querySelector('.menu-item.on') ?? document.getElementById('drink'))?.getBoundingClientRect();
     const ok = md.editId
       ? await run(() => S.backend.updateOrder(SPACE, md.editId, md.fields), '已更新訂單')
-      : await run(() => S.backend.addOrder(SPACE, cur.id, md.fields, md.qty), `已加入 ${md.qty} 杯：${md.label}`);
+      : await run(() => S.backend.addOrder(SPACE, cur.id, md.fields, md.qty), `已加入 ${md.qty} ${md.unit}：${md.label}`);
     if (!ok) return;
     S.modal = null;
     if (md.from === 'form') S.f = { ...newForm(), q: S.f.q };
     render();
+    if (!md.editId) flyTo(from, 'myorders', md.emoji);
   },
   cancelEdit() { S.f = { ...newForm(), q: S.f.q }; render(); },
   loadFav(el) {
@@ -936,26 +1054,28 @@ const actions = {
     const fav = favsFor(S.who.name.trim(), S.data.orders, shopOf(cur))[Number(el.dataset.i)];
     if (!fav) return;
     if (!S.who.name.trim()) return toast('請先選擇你的姓名', 'err');
-    S.modal = { type: 'confirmOrder', from: 'fav', editId: null, qty: S.favQty, price: fav.price, fields: orderFields(fav), label: drinkLabel(fav) };
+    const shop = shopOf(cur);
+    S.modal = { type: 'confirmOrder', from: 'fav', editId: null, qty: S.favQty, price: fav.price, fields: orderFields(fav, shop), label: drinkLabel(fav), ...modalKind(cur, shop, fav.item) };
     render();
   },
   editOrder(el) {
     const o = S.data.orders.find((x) => x.id === el.dataset.id);
     if (!o) return;
+    S.f.shopId = orderShopId(o, current());
     loadIntoForm(o, shopOf(current()));
     S.f.editId = o.id;
     render();
     document.getElementById('drink')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
-  delOrder: (el) => run(() => S.backend.deleteOrder(SPACE, el.dataset.id), '已刪除這杯'),
+  delOrder: (el) => run(() => S.backend.deleteOrder(SPACE, el.dataset.id), '已刪除這筆訂單'),
 
   // ---- 彙總
   copySummary() {
     const cur = current();
-    copyText(summaryText(cur, sessionOrders(cur), shopOf(cur)?.phone), '彙總已複製，可貼給店家');
+    copyText(summaryText(cur, sessionOrders(cur), allShops()), '彙總已複製，可貼給店家');
   },
   copyDetail() {
-    copyText(detailText(sessionOrders(current()), S.data.units), '明細已複製，可貼到 Excel');
+    copyText(detailText(sessionOrders(current()), S.data.units, current(), allShops()), '明細已複製，可貼到 Excel');
   },
   printSheet() {
     const url = sheetUrl();
@@ -977,7 +1097,7 @@ const actions = {
   async addShop() {
     const m = S.menu;
     if (!m.newName.trim()) return;
-    const id = await run(() => S.backend.saveShop(SPACE, { name: m.newName.trim(), phone: m.newPhone.trim(), sizes: ['中杯', '大杯'], items: [], toppings: [] }), '已新增店家，接著匯入菜單吧');
+    const id = await run(() => S.backend.saveShop(SPACE, { name: m.newName.trim(), phone: m.newPhone.trim(), kind: m.newKind, sizes: m.newKind === 'meal' ? ['單點'] : ['中杯', '大杯'], items: [], toppings: [] }), '已新增店家，接著匯入菜單吧');
     if (id) { m.newName = ''; m.newPhone = ''; m.dirty = false; m.selId = id; reconcile(); render(); }
   },
   async saveShop() {
@@ -985,16 +1105,16 @@ const actions = {
     const d = m.draft;
     if (!d.name.trim()) return toast('店名不能空白', 'err');
     const shop = {
-      id: m.selId, name: d.name.trim(), phone: d.phone.trim(),
+      id: m.selId, name: d.name.trim(), phone: d.phone.trim(), kind: d.kind,
       sizes: d.sizes.map((s) => s.trim() || '規格'),
-      items: d.items.filter((i) => i.n.trim()).map((i) => ({ n: i.n.trim(), p: d.sizes.map((_, k) => i.p[k] ?? null) })),
+      items: d.items.filter((i) => i.n.trim()).map((i) => ({ n: i.n.trim(), p: d.sizes.map((_, k) => i.p[k] ?? null), c: (i.c ?? '').trim() })),
       toppings: d.toppings.filter((t) => t.n.trim()).map((t) => ({ n: t.n.trim(), p: t.p })),
     };
     if (await run(() => S.backend.saveShop(SPACE, shop), '菜單已儲存')) { m.dirty = false; reconcile(); render(); }
   },
   addSize: () => editMenu((d) => { d.sizes.push(`規格${d.sizes.length + 1}`); d.items.forEach((it) => it.p.push(null)); }),
   delSize: (el) => editMenu((d) => { const i = Number(el.dataset.i); d.sizes.splice(i, 1); d.items.forEach((it) => it.p.splice(i, 1)); }),
-  addItem: () => { S.menu.filter = ''; editMenu((d) => d.items.unshift({ key: nk(), n: '', p: d.sizes.map(() => null) })); },
+  addItem: () => { S.menu.filter = ''; editMenu((d) => d.items.unshift({ key: nk(), n: '', p: d.sizes.map(() => null), c: '' })); },
   delItem: (el) => editMenu((d) => d.items.splice(Number(el.dataset.i), 1)),
   addTop: () => editMenu((d) => d.toppings.push({ key: nk(), n: '', p: 0 })),
   delTop: (el) => editMenu((d) => d.toppings.splice(Number(el.dataset.i), 1)),
@@ -1013,7 +1133,7 @@ const actions = {
     S.modal = null;
     editMenu((dr) => {
       dr.sizes = res.sizes;
-      dr.items = res.items.map((i) => ({ key: nk(), n: i.n, p: i.p }));
+      dr.items = res.items.map((i) => ({ key: nk(), n: i.n, p: i.p, c: i.c ?? '' }));
       dr.toppings = (res.toppings ?? dr.toppings).map((t) => ({ key: nk(), n: t.n, p: t.p }));
     });
     toast('已套用到草稿，記得按「儲存菜單」');
@@ -1022,7 +1142,7 @@ const actions = {
     const d = S.menu.draft;
     const shop = {
       sizes: d.sizes.map((s) => s.trim() || '規格'),
-      items: d.items.filter((i) => i.n.trim()).map((i) => ({ n: i.n.trim(), p: i.p })),
+      items: d.items.filter((i) => i.n.trim()).map((i) => ({ n: i.n.trim(), p: i.p, c: (i.c ?? '').trim() })),
       toppings: d.toppings.filter((t) => t.n.trim()).map((t) => ({ n: t.n.trim(), p: t.p })),
     };
     downloadCSV(menuToCSV(shop), `${d.name.trim() || '菜單'}-菜單.csv`);
@@ -1095,7 +1215,7 @@ function sheetUrl() {
   const cur = current();
   const orders = sessionOrders(cur);
   if (!orders.length) { toast('還沒有訂單', 'err'); return null; }
-  return URL.createObjectURL(new Blob([sheetHTML(cur, orders, S.data.units, shopOf(cur)?.phone)], { type: 'text/html;charset=utf-8' }));
+  return URL.createObjectURL(new Blob([sheetHTML(cur, orders, S.data.units, allShops())], { type: 'text/html;charset=utf-8' }));
 }
 
 const changes = {
@@ -1118,7 +1238,6 @@ const changes = {
     S.f.editId = null;
     render();
   },
-  nsShop(el) { S.modal.shopId = el.value; },
   menuShop(el) {
     if (S.menu.dirty && !confirm('目前的修改還沒儲存，確定要切換嗎？')) { el.value = S.menu.selId; return; }
     S.menu.selId = el.value;

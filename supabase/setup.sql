@@ -1,5 +1,5 @@
 -- =====================================================================
--- 飲料訂購（專屬連結版）：Supabase 資料庫設定
+-- 飲料餐點訂購（專屬連結版）：Supabase 資料庫設定
 -- 資料表一律以 ds_ 開頭，可以和其他系統共用同一個 Supabase 專案。
 -- 每個「空間」有一組猜不到的代號，知道代號（連結）的人才能讀寫該空間的資料。
 -- 用法：Supabase → SQL Editor → New query → 貼上全部內容 → Run（可重複執行）
@@ -21,11 +21,13 @@ create table if not exists public.ds_shops (
   space_id   text not null references public.ds_spaces(id) on delete cascade,
   name       text not null check (char_length(name) between 1 and 60),
   phone      text not null default '' check (char_length(phone) <= 30),
-  sizes      jsonb not null default '[]'::jsonb,  -- ["中杯","大杯"]
-  items      jsonb not null default '[]'::jsonb,  -- [{"n":"珍珠奶茶","p":[50,60]}]，null = 沒賣
-  toppings   jsonb not null default '[]'::jsonb,  -- [{"n":"珍珠","p":10}]
+  sizes      jsonb not null default '[]'::jsonb,  -- 飲料店 ["中杯","大杯"]；餐點店 ["小份","大份"]
+  items      jsonb not null default '[]'::jsonb,  -- [{"n":"珍珠奶茶","p":[50,60],"c":"奶茶類"}]，p 依 sizes 順序，null = 沒賣；c = 分類（選填）
+  toppings   jsonb not null default '[]'::jsonb,  -- 加料／加購 [{"n":"珍珠","p":10}]
+  kind       text not null default 'drink' check (kind in ('drink', 'meal')),  -- drink = 飲料店；meal = 餐點店（炸物、烤肉、蛋糕點心…）
   created_at timestamptz not null default now()
 );
+alter table public.ds_shops add column if not exists kind text not null default 'drink' check (kind in ('drink', 'meal'));
 create index if not exists ds_shops_space_idx on public.ds_shops (space_id);
 
 create table if not exists public.ds_units (
@@ -45,8 +47,10 @@ create table if not exists public.ds_sessions (
   shop_name    text not null,
   status       text not null default 'open' check (status in ('open', 'closed')),
   participants jsonb,                             -- null = 名單上所有人
+  extra_shop_ids jsonb not null default '[]'::jsonb,  -- 同一個團加開的其他店家（例如飲料團再加一家炸雞店）；shop_id 是主要店家
   created_at   timestamptz not null default now()
 );
+alter table public.ds_sessions add column if not exists extra_shop_ids jsonb not null default '[]'::jsonb;
 create index if not exists ds_sessions_space_idx on public.ds_sessions (space_id, created_at);
 
 create table if not exists public.ds_orders (
@@ -57,7 +61,8 @@ create table if not exists public.ds_orders (
   name       text not null,
   item       text not null,
   size       text not null default '',
-  price      int,                                 -- 含加料的單杯價格（由資料庫依菜單計算）
+  shop_id    text not null default '',            -- 這筆訂單點的是團裡哪一家店
+  price      int,                                 -- 含加料的單價（由資料庫依菜單計算）
   toppings   jsonb not null default '[]'::jsonb,
   sugar      text not null default '',
   ice        text not null default '',
@@ -66,6 +71,8 @@ create table if not exists public.ds_orders (
   created_at timestamptz not null default now()
 );
 alter table public.ds_orders add column if not exists custom boolean not null default false;
+alter table public.ds_orders add column if not exists shop_id text not null default '';
+update public.ds_orders o set shop_id = s.shop_id from public.ds_sessions s where o.session_id = s.id and o.shop_id = '';
 create index if not exists ds_orders_space_idx on public.ds_orders (space_id, created_at);
 
 -- ---------- 2. 安全規則：網頁不能直接讀寫資料表，一律透過下方函式並出示空間代號 ----------
@@ -102,6 +109,7 @@ begin
 end $$;
 
 -- 依菜單算出訂單內容與價格（加料以目前菜單的加價為準）
+-- 餐點店（kind = 'meal'）沒有甜度、冰量，一律存空白
 create or replace function public.ds__build_order(p_space text, p_shop_id text, p_order jsonb) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare
@@ -114,14 +122,14 @@ declare
 begin
   if coalesce(jsonb_typeof(p_order), '') <> 'object' then return public.ds__fail('訂單格式錯誤'); end if;
   if v_name = '' then return public.ds__fail('請先選擇或輸入你的姓名'); end if;
-  if v_item = '' then return public.ds__fail(case when v_custom then '請輸入飲料名稱' else '請選一杯飲料' end); end if;
+  if v_item = '' then return public.ds__fail(case when v_custom then '請輸入品名' else '請先選一個品項' end); end if;
   select * into s from public.ds_shops where id = p_shop_id and space_id = p_space;
-  if not found then return public.ds__fail('這個團的飲料店已被刪除'); end if;
+  if not found then return public.ds__fail('這個團的店家已被刪除'); end if;
   if v_custom then
-    -- 菜單上沒有的品項（例如季節限定）：品名與單杯價格由訂購人填寫
+    -- 菜單上沒有的品項（例如季節限定）：品名與單價由訂購人填寫
     if v_size <> '' and not (s.sizes ? v_size) then return public.ds__fail('規格不正確，請重新選擇'); end if;
     if coalesce(jsonb_typeof(p_order->'price'), '') <> 'number' or (p_order->>'price')::numeric not between 1 and 2000 then
-      return public.ds__fail('請輸入這杯飲料的價格（1～2000 元）');
+      return public.ds__fail('請輸入這個品項的價格（1～2000 元）');
     end if;
     v_base := round((p_order->>'price')::numeric)::int;
   else
@@ -147,7 +155,8 @@ begin
   return jsonb_build_object('ok', true,
     'unit', public.ds__txt(p_order->'unit', 60), 'name', v_name, 'item', v_item, 'size', v_size,
     'price', v_base, 'toppings', v_tops,
-    'sugar', public.ds__txt(p_order->'sugar', 20), 'ice', public.ds__txt(p_order->'ice', 20),
+    'sugar', case when s.kind = 'meal' then '' else public.ds__txt(p_order->'sugar', 20) end,
+    'ice', case when s.kind = 'meal' then '' else public.ds__txt(p_order->'ice', 20) end,
     'note', public.ds__txt(p_order->'note', 100), 'custom', v_custom);
 end $$;
 
@@ -160,6 +169,22 @@ begin
   for e in select * from jsonb_array_elements(p) loop
     n := public.ds__txt(e->'name', 40);
     if n <> '' then v := v || jsonb_build_array(jsonb_build_object('unit', public.ds__txt(e->'unit', 60), 'name', n)); end if;
+  end loop;
+  return v;
+end $$;
+
+-- 檢查加開的店家：必須是這個空間裡存在的店、不能和主要店家重複，最多 10 家
+create or replace function public.ds__extra_shops(p_space text, p_primary text, p_extra jsonb) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v jsonb := '[]'::jsonb; e jsonb; v_id text;
+begin
+  if p_extra is null or jsonb_typeof(p_extra) = 'null' then return v; end if;
+  if jsonb_typeof(p_extra) <> 'array' or jsonb_array_length(p_extra) > 10 then raise exception 'bad shops'; end if;
+  for e in select * from jsonb_array_elements(p_extra) loop
+    v_id := public.ds__txt(e, 40);
+    if v_id = '' or v_id = p_primary or v @> to_jsonb(v_id) then continue; end if;
+    if not exists (select 1 from public.ds_shops where ds_shops.id = v_id and ds_shops.space_id = p_space) then raise exception 'unknown shop'; end if;
+    v := v || to_jsonb(v_id);
   end loop;
   return v;
 end $$;
@@ -222,18 +247,21 @@ end $$;
 
 create or replace function public.ds_order_add(p_space text, p_session text, p_order jsonb, p_qty int default 1)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v public.ds_sessions; o jsonb; i int;
+declare v public.ds_sessions; o jsonb; i int; v_shop text;
 begin
   if not public.ds__space(p_space) then return public.ds__fail('找不到這個空間，連結可能有誤', 'space'); end if;
   select * into v from public.ds_sessions where id = p_session and space_id = p_space;
   if not found then return public.ds__fail('找不到這個團'); end if;
   if v.status <> 'open' then return public.ds__fail('這個團已經結束訂購了'); end if;
-  if p_qty is null or p_qty < 1 or p_qty > 30 then return public.ds__fail('杯數需在 1～30 之間'); end if;
-  o := public.ds__build_order(p_space, v.shop_id, p_order);
+  if p_qty is null or p_qty < 1 or p_qty > 30 then return public.ds__fail('數量需在 1～30 之間'); end if;
+  -- 訂單指定的店家必須是這個團的店家；沒指定就是主要店家
+  v_shop := coalesce(nullif(public.ds__txt(p_order->'shop_id', 40), ''), v.shop_id);
+  if v_shop <> v.shop_id and not (v.extra_shop_ids @> to_jsonb(v_shop)) then return public.ds__fail('這家店不在這個團裡'); end if;
+  o := public.ds__build_order(p_space, v_shop, p_order);
   if not (o->>'ok')::boolean then return o; end if;
   for i in 1..p_qty loop
-    insert into public.ds_orders (id, space_id, session_id, unit, name, item, size, price, toppings, sugar, ice, note, custom)
-    values (public.ds__id(12), p_space, v.id, o->>'unit', o->>'name', o->>'item', o->>'size', (o->>'price')::int,
+    insert into public.ds_orders (id, space_id, session_id, shop_id, unit, name, item, size, price, toppings, sugar, ice, note, custom)
+    values (public.ds__id(12), p_space, v.id, v_shop, o->>'unit', o->>'name', o->>'item', o->>'size', (o->>'price')::int,
             o->'toppings', o->>'sugar', o->>'ice', o->>'note', (o->>'custom')::boolean);
   end loop;
   return jsonb_build_object('ok', true, 'count', p_qty, 'price', (o->>'price')::int);
@@ -241,15 +269,17 @@ end $$;
 
 create or replace function public.ds_order_update(p_space text, p_id text, p_order jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v public.ds_sessions; o jsonb;
+declare v public.ds_sessions; o jsonb; v_shop text;
 begin
   if not public.ds__space(p_space) then return public.ds__fail('找不到這個空間，連結可能有誤', 'space'); end if;
   select s.* into v from public.ds_orders r join public.ds_sessions s on s.id = r.session_id where r.id = p_id and r.space_id = p_space;
   if not found then return public.ds__fail('找不到這筆訂單'); end if;
   if v.status <> 'open' then return public.ds__fail('這個團已經結束訂購了'); end if;
-  o := public.ds__build_order(p_space, v.shop_id, p_order);
+  v_shop := coalesce(nullif(public.ds__txt(p_order->'shop_id', 40), ''), v.shop_id);
+  if v_shop <> v.shop_id and not (v.extra_shop_ids @> to_jsonb(v_shop)) then return public.ds__fail('這家店不在這個團裡'); end if;
+  o := public.ds__build_order(p_space, v_shop, p_order);
   if not (o->>'ok')::boolean then return o; end if;
-  update public.ds_orders set unit = o->>'unit', name = o->>'name', item = o->>'item', size = o->>'size',
+  update public.ds_orders set shop_id = v_shop, unit = o->>'unit', name = o->>'name', item = o->>'item', size = o->>'size',
     price = (o->>'price')::int, toppings = o->'toppings', sugar = o->>'sugar', ice = o->>'ice', note = o->>'note',
     custom = (o->>'custom')::boolean
   where id = p_id and space_id = p_space;
@@ -268,20 +298,50 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
-create or replace function public.ds_session_create(p_space text, p_title text, p_shop text, p_participants jsonb)
+-- 舊版沒有 p_extra_shops，先移除再建立（新參數有預設值，舊網頁照常能開團）
+drop function if exists public.ds_session_create(text, text, text, jsonb);
+create or replace function public.ds_session_create(p_space text, p_title text, p_shop text, p_participants jsonb, p_extra_shops jsonb default '[]'::jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare s public.ds_shops; v_id text := public.ds__id(10); v_title text := left(btrim(coalesce(p_title, '')), 60);
+declare s public.ds_shops; v_id text := public.ds__id(10); v_title text := left(btrim(coalesce(p_title, '')), 60); v_extra jsonb;
 begin
   if not public.ds__space(p_space) then return public.ds__fail('找不到這個空間，連結可能有誤', 'space'); end if;
   if v_title = '' then return public.ds__fail('請輸入團名'); end if;
   select * into s from public.ds_shops where id = p_shop and space_id = p_space;
-  if not found then return public.ds__fail('找不到這家飲料店'); end if;
+  if not found then return public.ds__fail('找不到這家店'); end if;
   begin
-    insert into public.ds_sessions (id, space_id, title, shop_id, shop_name, participants)
-    values (v_id, p_space, v_title, s.id, s.name, public.ds__participants(p_participants));
+    v_extra := public.ds__extra_shops(p_space, s.id, p_extra_shops);
+  exception when others then return public.ds__fail('加開的店家不存在，請重新選擇');
+  end;
+  begin
+    insert into public.ds_sessions (id, space_id, title, shop_id, shop_name, participants, extra_shop_ids)
+    values (v_id, p_space, v_title, s.id, s.name, public.ds__participants(p_participants), v_extra);
   exception when others then return public.ds__fail('參加成員名單格式錯誤');
   end;
   return jsonb_build_object('ok', true, 'id', v_id);
+end $$;
+
+-- 調整這個團的店家：陣列第一個是主要店家，其餘是加開的；已經有人訂的店不能移除
+create or replace function public.ds_session_set_shops(p_space text, p_id text, p_shops jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v public.ds_sessions; s public.ds_shops; v_extra jsonb; v_bad text;
+begin
+  if not public.ds__space(p_space) then return public.ds__fail('找不到這個空間，連結可能有誤', 'space'); end if;
+  select * into v from public.ds_sessions where id = p_id and space_id = p_space;
+  if not found then return public.ds__fail('找不到這個團'); end if;
+  if coalesce(jsonb_typeof(p_shops), '') <> 'array' or jsonb_array_length(p_shops) < 1 then return public.ds__fail('請至少選一家店'); end if;
+  select * into s from public.ds_shops where id = public.ds__txt(p_shops->0, 40) and space_id = p_space;
+  if not found then return public.ds__fail('找不到這家店'); end if;
+  begin
+    v_extra := public.ds__extra_shops(p_space, s.id, p_shops - 0);
+  exception when others then return public.ds__fail('店家不存在，請重新選擇');
+  end;
+  select r.shop_id into v_bad from public.ds_orders r
+  where r.session_id = p_id and r.space_id = p_space and r.shop_id <> '' and r.shop_id <> s.id and not (v_extra @> to_jsonb(r.shop_id)) limit 1;
+  if v_bad is not null then
+    return public.ds__fail(format('「%s」已經有人訂了，不能從這個團移除', coalesce((select name from public.ds_shops where id = v_bad), '這家店')));
+  end if;
+  update public.ds_sessions set shop_id = s.id, shop_name = s.name, extra_shop_ids = v_extra where id = p_id and space_id = p_space;
+  return jsonb_build_object('ok', true);
 end $$;
 
 create or replace function public.ds_session_set_participants(p_space text, p_id text, p_participants jsonb)
@@ -326,10 +386,13 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_id text; v_name text;
   v_sizes jsonb := '[]'::jsonb; v_items jsonb := '[]'::jsonb; v_tops jsonb := '[]'::jsonb;
+  v_kind text; v_cat text;
   x jsonb; n text; p jsonb; i int; v_p jsonb;
 begin
   if not public.ds__space(p_space) then return public.ds__fail('找不到這個空間，連結可能有誤', 'space'); end if;
   if coalesce(jsonb_typeof(p_shop), '') <> 'object' then return public.ds__fail('店家資料格式錯誤'); end if;
+  v_kind := public.ds__txt(p_shop->'kind', 10);
+  if v_kind not in ('drink', 'meal') then v_kind := null; end if;  -- 沒帶 = 維持原本的種類（新增時是飲料店）
   v_name := public.ds__txt(p_shop->'name', 60);
   if v_name = '' then return public.ds__fail('店名不能空白'); end if;
   if coalesce(jsonb_typeof(p_shop->'sizes'), '') <> 'array' or jsonb_array_length(p_shop->'sizes') not between 1 and 8 then
@@ -351,7 +414,9 @@ begin
       v_p := v_p || case when jsonb_typeof(p) = 'number' and (p #>> '{}')::numeric between 0 and 100000
                          then to_jsonb(round((p #>> '{}')::numeric)::int) else 'null'::jsonb end;
     end loop;
-    v_items := v_items || jsonb_build_array(jsonb_build_object('n', n, 'p', v_p));
+    v_cat := public.ds__txt(x->'c', 20);
+    v_items := v_items || jsonb_build_array(jsonb_build_object('n', n, 'p', v_p)
+      || case when v_cat <> '' then jsonb_build_object('c', v_cat) else '{}'::jsonb end);
   end loop;
   if coalesce(jsonb_typeof(coalesce(p_shop->'toppings', '[]'::jsonb)), '') <> 'array' or jsonb_array_length(coalesce(p_shop->'toppings', '[]'::jsonb)) > 60 then
     return public.ds__fail('加料最多 60 種');
@@ -368,13 +433,13 @@ begin
   if v_id is null then
     if (select count(*) from public.ds_shops where space_id = p_space) >= 100 then return public.ds__fail('每個空間最多 100 家店'); end if;
     v_id := public.ds__id(10);
-    insert into public.ds_shops (id, space_id, name, phone, sizes, items, toppings)
-    values (v_id, p_space, v_name, public.ds__txt(p_shop->'phone', 30), v_sizes, v_items, v_tops);
+    insert into public.ds_shops (id, space_id, name, phone, sizes, items, toppings, kind)
+    values (v_id, p_space, v_name, public.ds__txt(p_shop->'phone', 30), v_sizes, v_items, v_tops, coalesce(v_kind, 'drink'));
   else
     update public.ds_shops set name = v_name, phone = public.ds__txt(p_shop->'phone', 30),
-      sizes = v_sizes, items = v_items, toppings = v_tops
+      sizes = v_sizes, items = v_items, toppings = v_tops, kind = coalesce(v_kind, kind)
     where id = v_id and space_id = p_space;
-    if not found then return public.ds__fail('找不到這家飲料店，可能已被刪除'); end if;
+    if not found then return public.ds__fail('找不到這家店，可能已被刪除'); end if;
   end if;
   return jsonb_build_object('ok', true, 'id', v_id);
 end $$;
@@ -430,3 +495,4 @@ revoke execute on function public.ds__id(int) from public, anon, authenticated;
 revoke execute on function public.ds__space(text) from public, anon, authenticated;
 revoke execute on function public.ds__build_order(text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.ds__participants(jsonb) from public, anon, authenticated;
+revoke execute on function public.ds__extra_shops(text, text, jsonb) from public, anon, authenticated;

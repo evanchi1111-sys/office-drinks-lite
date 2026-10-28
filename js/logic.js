@@ -9,6 +9,53 @@ export const esc = (s) =>
 
 export const formatPrice = (p) => (p == null ? '—' : `$${p}`);
 
+// ---------------------------------------------------------------- 店家種類（飲料／餐點）
+
+export const KIND_ICON = { drink: '🧋', meal: '🍗' };
+export const KIND_LABEL = { drink: '飲料', meal: '餐點' };
+export const KIND_UNIT = { drink: '杯', meal: '份' };
+export const kindOf = (shop) => (shop?.kind === 'meal' ? 'meal' : 'drink');
+
+// 依品名猜一個代表圖示（沒對到就用店家種類的預設圖示）；前面的關鍵字優先
+const EMOJI_RULES = [
+  [/珍珠|波霸|奶茶|布丁奶/, '🧋'], [/咖啡|拿鐵|美式|摩卡/, '☕'], [/檸檬|柳橙|柑|橘/, '🍋'], [/芒果/, '🥭'], [/草莓/, '🍓'], [/葡萄/, '🍇'], [/西瓜/, '🍉'],
+  [/鮮奶|牛奶|豆漿/, '🥛'], [/冰沙|冰淇淋|霜淇淋/, '🍧'], [/果汁|汁/, '🧃'], [/茶|青|烏龍|仙草/, '🍵'],
+  [/甜不辣|串|關東煮|魚/, '🍢'], [/薯條|地瓜/, '🍟'], [/雞腿|雞排|雞|鹽酥|炸/, '🍗'], [/五花|培根|豬|肉/, '🥓'], [/玉米/, '🌽'], [/蝦/, '🍤'], [/起司|乳酪/, '🧀'],
+  [/蛋糕|提拉|千層|慕斯/, '🍰'], [/布丁|奶酪|焦糖/, '🍮'], [/塔|派/, '🥧'], [/司康|可頌|麵包|吐司/, '🥐'], [/餅乾|曲奇/, '🍪'], [/甜甜圈/, '🍩'], [/冰/, '🍨'],
+];
+export const emojiFor = (name, kind) => EMOJI_RULES.find(([re]) => re.test(name ?? ''))?.[1] ?? (kind === 'meal' ? '🍽️' : '🥤');
+
+/** 這個團有哪些店家（第一個是主要店家，其餘是加開的）。 */
+export const sessionShopIds = (session) => [session.shop_id, ...(session.extra_shop_ids ?? [])];
+/** 訂單屬於哪家店（舊訂單沒記錄時算主要店家）。 */
+export const orderShopId = (o, session) => o.shop_id || session.shop_id;
+
+/** 依店家分組：照團裡店家的順序；訂單所屬的店若已被刪除也會保留一組。 */
+export function groupByShop(orders, session, shops) {
+  const ids = sessionShopIds(session);
+  for (const o of orders) {
+    const id = orderShopId(o, session);
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids.map((id) => {
+    const shop = shops.find((s) => s.id === id) ?? null;
+    return {
+      id, shop, kind: kindOf(shop),
+      name: shop?.name ?? (id === session.shop_id ? session.shop_name : '（已刪除的店家）'),
+      phone: shop?.phone ?? '',
+      orders: orders.filter((o) => orderShopId(o, session) === id),
+    };
+  });
+}
+
+/** 「3 杯」「2 份」，飲料與餐點都有時「3 杯飲料、2 份餐點」。 */
+export function countText(orders, session, shops) {
+  const n = { drink: 0, meal: 0 };
+  for (const o of orders) n[kindOf(shops.find((s) => s.id === orderShopId(o, session)))] += 1;
+  if (n.drink && n.meal) return `${n.drink} 杯飲料、${n.meal} 份餐點`;
+  return n.meal ? `${n.meal} 份` : `${n.drink} 杯`;
+}
+
 const toppingKey = (t) => (t ?? []).map((x) => x.n).sort().join('+');
 
 // ---------------------------------------------------------------- 彙總
@@ -16,13 +63,13 @@ const toppingKey = (t) => (t ?? []).map((x) => x.n).sort().join('+');
 export function aggregate(orders) {
   const map = new Map();
   for (const o of orders) {
-    const k = [o.item, o.size, o.sugar, o.ice, toppingKey(o.toppings), o.note, o.price ?? ''].join('|');
+    const k = [o.shop_id ?? '', o.item, o.size, o.sugar, o.ice, toppingKey(o.toppings), o.note, o.price ?? ''].join('|');
     const hit = map.get(k);
     if (hit) {
       hit.count += 1;
       hit.total += o.price ?? 0;
     } else {
-      map.set(k, { item: o.item, size: o.size, sugar: o.sugar, ice: o.ice, note: o.note, toppings: o.toppings, count: 1, price: o.price, total: o.price ?? 0 });
+      map.set(k, { shop_id: o.shop_id, item: o.item, size: o.size, sugar: o.sugar, ice: o.ice, note: o.note, toppings: o.toppings, count: 1, price: o.price, total: o.price ?? 0 });
     }
   }
   return Array.from(map.values()).sort((a, b) => a.item.localeCompare(b.item, 'zh-Hant'));
@@ -56,22 +103,29 @@ export function pendingPeople(orders, units, session) {
   return groupByUnit(orders, units, session).filter((g) => g.notYet.length > 0).map((g) => ({ unit: g.unit, names: g.notYet }));
 }
 
-export const toppingText = (t) => (t && t.length ? ` 加${t.map((x) => x.n).join('、')}` : '');
+// 加料名稱本身已經是「加辣」「加蛋」這類時，不再多加一個「加」
+export const toppingText = (t) => (t && t.length ? ` ${t.every((x) => x.n.startsWith('加')) ? '' : '加'}${t.map((x) => x.n).join('、')}` : '');
 
 export function drinkLabel(a) {
   return [a.item, a.size, a.sugar, a.ice].filter(Boolean).join(' ') + toppingText(a.toppings) + (a.note ? `(${a.note})` : '');
 }
 
-export function summaryText(session, orders, phone) {
-  const lines = aggregate(orders).map((r) => `${drinkLabel(r)} × ${r.count}`);
-  return [`【${session.title}】${session.shop_name}${phone ? `(${phone})` : ''}`, ...lines, `共 ${orders.length} 杯，合計 $${totalOf(orders)}`].join('\n');
+export function summaryText(session, orders, shops) {
+  return groupByShop(orders, session, shops)
+    .filter((g) => g.orders.length)
+    .map((g) => {
+      const lines = aggregate(g.orders).map((r) => `${drinkLabel(r)} × ${r.count}`);
+      return [`【${session.title}】${g.name}${g.phone ? `(${g.phone})` : ''}`, ...lines, `共 ${g.orders.length} ${KIND_UNIT[g.kind]}，合計 $${totalOf(g.orders)}`].join('\n');
+    })
+    .join('\n\n');
 }
 
-export function detailText(orders, units) {
-  const head = ['單位', '姓名', '品項', '規格', '甜度', '冰量', '加料', '備註', '價格'].join('\t');
+export function detailText(orders, units, session, shops) {
+  const head = ['單位', '姓名', '店家', '品項', '規格', '甜度', '冰量', '加料', '備註', '價格'].join('\t');
+  const shopName = (o) => shops.find((s) => s.id === orderShopId(o, session))?.name ?? session.shop_name;
   const rows = groupByUnit(orders, units)
     .flatMap((g) => g.orders)
-    .map((o) => [o.unit, o.name, o.item, o.size, o.sugar, o.ice, o.toppings.map((t) => t.n).join('、'), o.note, o.price ?? ''].join('\t'));
+    .map((o) => [o.unit, o.name, shopName(o), o.item, o.size, o.sugar, o.ice, o.toppings.map((t) => t.n).join('、'), o.note, o.price ?? ''].join('\t'));
   return [head, ...rows].join('\n');
 }
 
@@ -105,23 +159,30 @@ export function favsFor(name, allOrders, shop) {
 
 // ---------------------------------------------------------------- 分發單（A4 列印）
 
-export function sheetHTML(session, orders, units, phone) {
-  const agg = aggregate(orders);
+export function sheetHTML(session, orders, units, shops) {
+  const shopGroups = groupByShop(orders, session, shops).filter((g) => g.orders.length);
+  const multi = shopGroups.length > 1;
   const groups = groupByUnit(orders, units, session).filter((g) => g.orders.length > 0);
   const date = new Date(session.created_at).toLocaleDateString('zh-TW');
-  const summaryRows = agg
-    .map((r) => `<tr><td>${esc(drinkLabel(r))}</td><td class="n">${r.count}</td><td class="n">${r.price == null ? '—' : '$' + r.price}</td><td class="n">$${r.total}</td></tr>`)
+  const shopName = (o) => shops.find((s) => s.id === orderShopId(o, session))?.name ?? session.shop_name;
+  const shopTables = shopGroups
+    .map((g) => {
+      const rows = aggregate(g.orders)
+        .map((r) => `<tr><td>${esc(drinkLabel(r))}</td><td class="n">${r.count}</td><td class="n">${r.price == null ? '—' : '$' + r.price}</td><td class="n">$${r.total}</td></tr>`)
+        .join('');
+      return `<h2>${esc(g.name)}${g.phone ? ` ・ 電話 ${esc(g.phone)}` : ''}</h2>
+<table><thead><tr><th>品項</th><th class="n">數量（${KIND_UNIT[g.kind]}）</th><th class="n">單價</th><th class="n">小計</th></tr></thead><tbody>${rows}</tbody>
+<tfoot><tr><td>合計</td><td class="n">${g.orders.length}</td><td></td><td class="n">$${totalOf(g.orders)}</td></tr></tfoot></table>`;
+    })
     .join('');
-  const page1 = `<section><h1>${esc(session.title)}</h1><p class="sub">${esc(session.shop_name)}${phone ? ` ・ 電話 ${esc(phone)}` : ''} ・ ${date} ・ 品項彙總</p>
-<table><thead><tr><th>品項</th><th class="n">杯數</th><th class="n">單價</th><th class="n">小計</th></tr></thead><tbody>${summaryRows}</tbody>
-<tfoot><tr><td>合計</td><td class="n">${orders.length}</td><td></td><td class="n">$${totalOf(orders)}</td></tr></tfoot></table></section>`;
+  const page1 = `<section><h1>${esc(session.title)}</h1><p class="sub">${date} ・ 品項彙總</p>${shopTables}${multi ? `<p class="grand">總計 ${esc(countText(orders, session, shops))} ・ $${totalOf(orders)}</p>` : ''}</section>`;
   const unitPages = groups
     .map((g) => {
       const rows = g.orders
-        .map((o) => `<tr><td>${esc(o.name)}</td><td>${esc(drinkLabel(o))}</td><td class="n">${o.price == null ? '—' : '$' + o.price}</td><td class="sign"></td></tr>`)
+        .map((o) => `<tr><td>${esc(o.name)}</td><td>${esc(drinkLabel(o))}${multi ? ` <span class="shop">（${esc(shopName(o))}）</span>` : ''}</td><td class="n">${o.price == null ? '—' : '$' + o.price}</td><td class="sign"></td></tr>`)
         .join('');
-      return `<section><h1>${esc(g.unit)}</h1><p class="sub">${esc(session.title)} ・ ${esc(session.shop_name)} ・ ${g.orders.length} 杯 ・ 小計 $${totalOf(g.orders)}</p>
-<table><thead><tr><th>姓名</th><th>飲料</th><th class="n">金額</th><th class="sign">簽收</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+      return `<section><h1>${esc(g.unit)}</h1><p class="sub">${esc(session.title)} ・ ${esc(shopGroups.map((x) => x.name).join('、'))} ・ ${esc(countText(g.orders, session, shops))} ・ 小計 $${totalOf(g.orders)}</p>
+<table><thead><tr><th>姓名</th><th>品項</th><th class="n">金額</th><th class="sign">簽收</th></tr></thead><tbody>${rows}</tbody></table></section>`;
     })
     .join('');
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(session.title)} 分發單</title>
@@ -132,6 +193,9 @@ body{font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;co
 section{page-break-after:always;max-width:190mm;margin:0 auto 24px}
 section:last-child{page-break-after:auto}
 h1{font-size:22px;margin:0 0 4px}
+h2{font-size:17px;margin:18px 0 6px}
+.grand{margin:14px 0 0;font-weight:700;font-size:15px}
+.shop{color:#666;font-size:12px}
 .sub{margin:0 0 14px;color:#555;font-size:13px}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{border:1px solid #888;padding:8px 10px;text-align:left}
@@ -228,6 +292,8 @@ export function parseMenu(text) {
       const m = r[0].match(NAME_PRICE);
       if (m) return [m[1].trim(), m[2]];
     }
+    // Excel 貼上的分類標題列（「炸物」後面只有空白格）當成單一儲存格
+    if (r.length > 1 && r.slice(1).every((x) => x === '')) return [r[0]];
     return r;
   });
   const first = rows[0];
@@ -242,12 +308,13 @@ export function parseMenu(text) {
   }
   if (sizes.length === 0) sizes = ['中杯'];
   const items = [];
+  let cat = '';
   for (const r of body) {
     const n = r[0]?.trim();
     if (!n) continue;
     const p = sizes.map((_, i) => parsePrice(r[i + 1]));
-    if (r.length === 1 && p.every((x) => x === null)) continue; // 分類標題列
-    items.push({ n, p });
+    if (r.length === 1 && p.every((x) => x === null)) { cat = n.slice(0, 20); continue; } // 分類標題列：之後的品項都歸這一類
+    items.push(cat ? { n, p, c: cat } : { n, p });
   }
   return { sizes, items, header: looksHeader };
 }
@@ -257,12 +324,14 @@ export function applyMenu(existing, parsed, mode) {
   const sizes = [...existing.sizes];
   for (const s of parsed.sizes) if (!sizes.includes(s)) sizes.push(s);
   const remap = (labels, p) => sizes.map((s) => { const i = labels.indexOf(s); return i >= 0 ? (p[i] ?? null) : null; });
-  const items = existing.items.map((it) => ({ n: it.n, p: remap(existing.sizes, it.p) }));
+  const items = existing.items.map((it) => ({ ...it, p: remap(existing.sizes, it.p) }));
   for (const it of parsed.items) {
     const np = remap(parsed.sizes, it.p);
     const hit = items.find((x) => x.n === it.n);
-    if (hit) hit.p = hit.p.map((v, i) => np[i] ?? v);
-    else items.push({ n: it.n, p: np });
+    if (hit) {
+      hit.p = hit.p.map((v, i) => np[i] ?? v);
+      if (it.c) hit.c = it.c;
+    } else items.push({ n: it.n, p: np, ...(it.c ? { c: it.c } : {}) });
   }
   return { sizes, items, toppings: mergeToppings(existing.toppings ?? [], parsed.toppings ?? [], 'append') };
 }
@@ -271,7 +340,10 @@ const csvCell = (v) => { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? 
 
 /** 匯出菜單成 CSV（與匯入格式相同，加料放在下方「加料」區段）；開頭加 BOM 讓 Excel 正確顯示中文。 */
 export function menuToCSV(shop) {
-  const rows = [['品名', ...shop.sizes], ...shop.items.map((i) => [i.n, ...shop.sizes.map((_, k) => i.p[k] ?? '')])];
+  // 沒有分類的品項在最前面；有分類的各自接在「分類標題列」（只有一格）後面，匯入時會還原
+  const row = (i) => [i.n, ...shop.sizes.map((_, k) => i.p[k] ?? '')];
+  const cats = [...new Set(shop.items.map((i) => i.c).filter(Boolean))];
+  const rows = [['品名', ...shop.sizes], ...shop.items.filter((i) => !i.c).map(row), ...cats.flatMap((c) => [[c], ...shop.items.filter((i) => i.c === c).map(row)])];
   if (shop.toppings.length) rows.push([], ['加料', '加價'], ...shop.toppings.map((t) => [t.n, t.p]));
   return '﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
