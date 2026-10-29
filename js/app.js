@@ -3,7 +3,7 @@ import {
   SUGAR_OPTIONS, ICE_OPTIONS, esc, formatPrice, aggregate, totalOf, expectedPeople, groupByUnit, pendingPeople,
   drinkLabel, summaryText, detailText, favsFor, sheetHTML, parseMenu, parseToppingsText, mergeToppings, applyMenu,
   parseRoster, mergeRoster, readTextFile, menuToCSV, splitMenuSections, rosterToCSV,
-  KIND_ICON, KIND_LABEL, KIND_UNIT, kindOf, emojiFor, photoFor, sessionShopIds, orderShopId, groupByShop, countText,
+  KIND_ICON, KIND_LABEL, KIND_UNIT, kindOf, emojiFor, sessionShopIds, orderShopId, groupByShop, countText,
 } from './logic.js';
 
 const params = new URLSearchParams(location.search);
@@ -478,15 +478,9 @@ function viewOrder(session) {
 `;
 }
 
-// 品項／店家的方形圖：有照片用照片（載入失敗退回圖示），沒有就用圖示
-function tileHtml(name, kind, px = 360) {
-  const emoji = emojiFor(name, kind);
-  const src = photoFor(name, px);
-  if (!src) return `<span class="emo" aria-hidden="true">${emoji}</span>`;
-  return `<img class="photo" loading="lazy" decoding="async" alt="" src="${esc(src)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'emo',textContent:'${emoji}'}))">`;
-}
-// 店家磚：先看店名，對不到就用菜單裡第一個有照片的品項
-const shopTile = (shop, px = 240) => tileHtml(photoFor(shop.name) ? shop.name : (shop.items.find((i) => photoFor(i.n))?.n ?? shop.name), kindOf(shop), px);
+// 品項／店家的方形圖：用依品名猜的 emoji
+const tileHtml = (name, kind) => `<span class="emo" aria-hidden="true">${emojiFor(name, kind)}</span>`;
+const shopTile = (shop) => tileHtml(shop.name, kindOf(shop));
 
 // 手機固定在畫面底部、電腦放在頁首（用 CSS 切換）
 const tabsNav = () => `<nav class="tabs" role="tablist">${[['order', '訂購'], ['summary', '彙總'], ['menu', '菜單'], ['roster', '名單']].map(([k, l]) => `<button type="button" role="tab" class="tab ${S.tab === k ? 'on' : ''}" aria-selected="${S.tab === k}" data-act="tab" data-v="${k}"><svg viewBox="0 0 24 24" aria-hidden="true">${TAB_ICONS[k]}</svg>${l}</button>`).join('')}</nav>`;
@@ -826,26 +820,19 @@ function customPrice(f) {
 const modalKind = (session, shop, item) => ({
   kindLabel: KIND_LABEL[kindOf(shop)], unit: KIND_UNIT[kindOf(shop)], shopName: sessionShopIds(session).length > 1 ? shop.name : '',
   emoji: emojiFor(item, kindOf(shop)),
-  photo: photoFor(item, 120),
 });
 
 // 加入訂單後，食物圖示從選的位置拋物線飛到「我的訂單」，目標卡片彈一下
-function flyTo(rect, targetId, emoji, photo) {
+function flyTo(rect, targetId, emoji) {
   const el = document.getElementById(targetId);
   if (!rect || !el || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const b = el.getBoundingClientRect();
   const node = document.createElement('div');
   node.className = 'fly';
   node.setAttribute('aria-hidden', 'true');
-  if (photo) {
-    const img = document.createElement('img');
-    img.className = 'photo';
-    img.alt = '';
-    img.src = photo;
-    node.appendChild(img);
-  } else node.textContent = emoji;
+  node.textContent = emoji;
   document.body.appendChild(node);
-  const half = photo ? 24 : 18;
+  const half = 18;
   const x0 = rect.left + rect.width / 2 - half;
   const y0 = rect.top + rect.height / 2 - half;
   const x1 = b.left + 24;
@@ -1079,7 +1066,7 @@ const actions = {
     S.modal = null;
     if (md.from === 'form') S.f = { ...newForm(), q: S.f.q, shopId: S.f.shopId, cat: S.f.cat };
     render();
-    if (!md.editId) flyTo(from, 'myorders', md.emoji, md.photo);
+    if (!md.editId) flyTo(from, 'myorders', md.emoji);
   },
   cancelEdit() { S.f = { ...newForm(), q: S.f.q }; render(); },
   loadFav(el) {

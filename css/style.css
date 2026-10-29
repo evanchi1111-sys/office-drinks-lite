@@ -166,8 +166,9 @@ h3.row-h { margin-bottom: .6rem; }
 .shop-tile:disabled { opacity: .45; cursor: not-allowed; }
 .shop-tile .kind { position: absolute; top: -6px; right: 6px; background: var(--primary); color: #fff; font-size: .66rem; font-weight: 800; padding: 1px 7px; border-radius: 9px; }
 .shop-tile .kind.d { background: var(--green); }
-.photo { width: 100%; height: 100%; object-fit: cover; display: block; }
 .emo { font-size: 2.3rem; line-height: 1; }
+.menu-item .emo { font-size: clamp(2.6rem, 9vw, 4.6rem); filter: drop-shadow(0 4px 4px rgb(0 0 0 / .12)); }
+.sh-head .emo { font-size: 2.4rem; }
 
 /* 品項：三欄方磚 */
 .menu { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px 10px; }
@@ -309,7 +310,6 @@ h3.row-h { margin-bottom: .6rem; }
 
 /* ---------- 加入訂單的動畫 ---------- */
 .fly { position: fixed; left: 0; top: 0; z-index: 200; font-size: 36px; line-height: 1; pointer-events: none; }
-.fly .photo { width: 48px; height: 48px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 4px 12px rgb(0 0 0 / .3); }
 .bump { animation: bump .5s cubic-bezier(.3, 1.8, .5, 1); }
 @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.04); } 100% { transform: scale(1); } }
 
