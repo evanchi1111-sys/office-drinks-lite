@@ -3,7 +3,7 @@ import {
   SUGAR_OPTIONS, ICE_OPTIONS, esc, formatPrice, aggregate, totalOf, expectedPeople, groupByUnit, pendingPeople,
   drinkLabel, summaryText, detailText, favsFor, sheetHTML, parseMenu, parseToppingsText, mergeToppings, applyMenu,
   parseRoster, mergeRoster, readTextFile, menuToCSV, splitMenuSections, rosterToCSV,
-  KIND_ICON, KIND_LABEL, KIND_UNIT, kindOf, emojiFor, sessionShopIds, orderShopId, groupByShop, countText,
+  KIND_ICON, KIND_LABEL, KIND_UNIT, kindOf, emojiFor, photoFor, sessionShopIds, orderShopId, groupByShop, countText,
 } from './logic.js';
 
 const params = new URLSearchParams(location.search);
@@ -216,7 +216,7 @@ function render() {
 
   app.innerHTML = viewApp();
   modalRoot.innerHTML = S.modal ? viewModal() : '';
-  document.body.classList.toggle('modal-open', !!S.modal);
+  document.body.classList.toggle('modal-open', !!S.modal || (S.tab === 'order' && !!(S.f.item || S.f.custom)));
 
   document.querySelectorAll('[data-scroll]').forEach((el) => { if (scrolls[el.dataset.scroll]) el.scrollTop = scrolls[el.dataset.scroll]; });
   if (key) {
@@ -245,6 +245,13 @@ const kindChips = (bind, value, dirty = '') => `<div class="chips">${['drink', '
 const chips = (bind, options, value, disabled = []) =>
   `<div class="chips">${options.map((o) => `<button type="button" class="chip ${o === value ? 'on' : ''}" data-act="pick" data-bind="${bind}" data-v="${esc(o)}" ${disabled.includes(o) ? 'disabled' : ''} aria-pressed="${o === value}">${esc(o)}</button>`).join('')}</div>`;
 
+const TAB_ICONS = {
+  order: '<path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>',
+  summary: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/>',
+  menu: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+  roster: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+};
+
 function viewApp() {
   const liveDot = DEMO ? '<span class="live demo">示範模式</span>'
     : `<span class="live ${S.live}">${S.live === 'live' ? '即時同步' : S.live === 'connecting' ? '連線中…' : '離線・自動重試'}</span>`;
@@ -252,6 +259,7 @@ function viewApp() {
   if (S.missing) return viewMissing();
   const head = `<header class="top">
     <div class="brand"><span class="logo" aria-hidden="true">🧋</span><div><h1>${esc(S.data?.space.name ?? '飲料訂購')}</h1><a class="home-link" href="./${DEMO ? '?demo&home' : ''}">飲料餐點訂購・專屬連結版</a></div></div>
+    ${S.data ? tabsNav() : ''}
     <div class="top-r">${liveDot}${S.data ? btn('spaceInfo', '🔑 空間連結', { cls: 'ghost sm' }) : ''}</div>
   </header>`;
   if (!S.data) {
@@ -266,7 +274,6 @@ function viewApp() {
   return `${head}
     ${S.error ? `<p class="err">更新失敗：${esc(S.error)}</p>` : ''}
     ${viewSessionBar(cur)}
-    <nav class="tabs" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" class="tab ${S.tab === k ? 'on' : ''}" aria-selected="${S.tab === k}" data-act="tab" data-v="${k}">${l}</button>`).join('')}</nav>
     <main class="pane">${pane}</main>
     ${DEMO ? '<p class="foot">示範模式：資料只存在這個分頁，關閉分頁就會清除。</p>' : ''}`;
 }
@@ -370,7 +377,7 @@ function viewOrder(session) {
   const cat = cats.includes(f.cat) ? f.cat : '';
   const filtered = shop.items.filter((i) => (!q || i.n.toLowerCase().includes(q)) && (!cat || i.c === cat));
   const itemRow = (i) => `<li><button type="button" class="menu-item ${f.item === i.n ? 'on' : ''}" data-act="pickItem" data-v="${esc(i.n)}">
-          <span class="em" aria-hidden="true">${emojiFor(i.n, kind)}</span>
+          <span class="tile">${tileHtml(i.n, kind)}</span>
           <span class="nm">${esc(i.n)}</span>
           <span class="prices">${shop.sizes.map((s, k) => (i.p[k] != null ? `${esc(s)} $${i.p[k]}` : null)).filter(Boolean).join(' / ')}</span>
         </button></li>`;
@@ -381,13 +388,15 @@ function viewOrder(session) {
     : filtered.map(itemRow).join('');
   const tel = shop.phone ? `・<a href="tel:${esc(shop.phone.split(/[；;、,]/)[0].replace(/[^\d+#*]/g, ''))}">${esc(shop.phone)}</a>` : '';
   const topWord = kind === 'meal' ? '加購' : '加料';
+  const mineSum = mine.reduce((s, o) => s + (o.price ?? 0), 0);
+  const sheetOpen = !!(f.item || f.custom);
 
   return `
     ${open ? '' : '<div class="closed">這個團已結束訂購，只能查看。需要加點請按上方「重新開放」。</div>'}
-    ${expected.length ? viewPending(pendingPeople(orders, units, session), open) : ''}
-
-    <section class="card">
-      <h3>1. 你是誰？</h3>
+    <div class="ord">
+    <div class="ord-side">
+    <section class="card ord-who">
+      <h3>你是誰？</h3>
       <div class="who">
         <select data-change="whoUnit" aria-label="選擇單位">
           <option value="" disabled ${!unitObj && S.who.unit !== MANUAL ? 'selected' : ''}>選擇單位</option>
@@ -402,7 +411,18 @@ function viewOrder(session) {
           : `<input type="text" data-k="whoName" data-bind="who.name" data-rerender maxlength="40" placeholder="輸入你的姓名" value="${esc(S.who.name)}">`}
       </div>
     </section>
-
+    ${name ? `<section class="card ord-mine">
+      <h3 id="myorders">${esc(name)} 的訂單</h3>
+      ${mine.length ? `<ul class="list">${mine.map((o) => `<li>
+        <span class="mt">${tileHtml(o.item, kindOf(allShops().find((s) => s.id === orderShopId(o, session))), 120)}</span>
+        <span class="grow">${esc(drinkLabel(o))}${customTag(o)}${shopTag(o, session)} <b class="money">${o.price != null ? `$${o.price}` : ''}</b></span>
+        ${open ? `${btn('editOrder', '✏️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="修改"` })}${btn('delOrder', '🗑️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="刪除"`, disabled: S.busy })}` : ''}
+      </li>`).join('')}</ul>
+      <div class="mine-total"><span>${esc(countText(mine, session, allShops()))}</span><b>$${mineSum}</b></div>` : '<p class="empty">還沒有訂單，點左邊的品項加入。</p>'}
+    </section>` : ''}
+    ${expected.length ? `<div class="ord-pending">${viewPending(pendingPeople(orders, units, session), open)}</div>` : ''}
+    </div>
+    <div class="ord-main">
     ${favs.length && open ? `<section class="card">
       <h3 class="row-h">常點的（一鍵再訂）${stepper('favQty', S.favQty, `再訂${unit}數`)}</h3>
       <ul class="favs">${favs.map((x, i) => `<li>
@@ -414,16 +434,22 @@ function viewOrder(session) {
     </section>` : ''}
 
     <section class="card" id="drink">
-      ${shopList.length > 1 ? `<div class="shoptabs" role="group" aria-label="選擇店家">${shopList.map((s) => `<button type="button" class="chip ${s.id === shop.id ? 'on' : ''}" data-act="pickShop" data-v="${esc(s.id)}" aria-pressed="${s.id === shop.id}" ${f.editId ? 'disabled' : ''}>${KIND_ICON[kindOf(s)]} ${esc(s.name)}</button>`).join('')}</div>` : ''}
-      <h3 class="row-h">2. 選${label}${f.editId ? '（修改中）' : ''}<span class="shop">${shopList.length > 1 ? tel.slice(1) : esc(shop.name) + tel}</span></h3>
-      <input type="search" class="search" data-k="q" data-bind="f.q" data-rerender placeholder="🔍 搜尋品名" value="${esc(f.q)}">
+      ${shopList.length > 1 ? `<div class="shoptabs" role="group" aria-label="選擇店家">${shopList.map((s) => `<button type="button" class="shop-tile ${s.id === shop.id ? 'on' : ''}" data-act="pickShop" data-v="${esc(s.id)}" aria-pressed="${s.id === shop.id}" ${f.editId ? 'disabled' : ''}><span class="kind ${kindOf(s) === 'drink' ? 'd' : ''}">${KIND_LABEL[kindOf(s)]}</span><span class="tile">${shopTile(s)}</span><span class="l">${esc(s.name)}</span></button>`).join('')}</div>` : ''}
+      <h3 class="row-h">${esc(shopList.length > 1 ? '選' + label : shop.name)}${f.editId ? '（修改中）' : ''}<span class="shop">${shopList.length > 1 ? esc(shop.name) + tel : tel.slice(1)}</span></h3>
+      <input type="search" class="search" data-k="q" data-bind="f.q" data-rerender placeholder="搜尋${label}" value="${esc(f.q)}">
       ${cats.length ? `<div class="chips cats">${['', ...cats].map((c) => `<button type="button" class="chip sm ${c === cat ? 'on' : ''}" data-act="pickCat" data-v="${esc(c)}" aria-pressed="${c === cat}">${c ? esc(c) : '全部'}</button>`).join('')}</div>` : ''}
       <ul class="menu" data-scroll="menu">
         ${menuRows}
         ${filtered.length ? '' : `<li class="empty">找不到符合的${label}</li>`}
       </ul>
       ${f.custom ? '' : `<div class="custom-entry">${btn('customItem', '✏️ 菜單上沒有？自己輸入（季節限定等）', { cls: 'sm' })}</div>`}
-      ${f.item || f.custom ? `<div class="opts">
+    </section>
+    </div>
+    </div>
+    ${sheetOpen ? `<div class="sheet-back" data-act="cancelPick"></div>
+      <div class="sheet" role="dialog" aria-modal="true" aria-label="選擇${label}的選項">
+        <div class="grab"></div>
+        <div class="sh-head">${f.custom ? '' : `<div class="tile">${tileHtml(f.item, kind, 200)}</div>`}<div class="grow"><h3>${f.custom ? `自己輸入的${label}` : esc(f.item)}</h3><small>${esc(shop.name)}</small></div>${btn('cancelPick', '✕', { cls: 'icon', attrs: 'aria-label="關閉"' })}</div>
         ${f.custom
           ? `<div class="custom-box">
               <div class="row-h"><b class="picked">自己輸入的${label}</b>${btn('cancelCustom', '改選菜單', { cls: 'ghost sm' })}</div>
@@ -432,7 +458,7 @@ function viewOrder(session) {
               <label class="lbl">單價（不含${topWord}，請照店家菜單填）</label>
               <input type="text" inputmode="numeric" data-k="cPrice" data-cprice placeholder="例如：65" value="${esc(f.cPrice)}">
             </div>`
-          : `<div class="picked">已選：${esc(f.item)}</div>`}
+          : ''}
         <label class="lbl">${kind === 'meal' ? '份量／口味' : '規格'}</label>${chips('f.size', shop.sizes, f.size, missing)}
         ${kind === 'drink' ? `<label class="lbl">甜度</label>${chips('f.sugar', SUGAR_OPTIONS, f.sugar)}
         <label class="lbl">冰量</label>${chips('f.ice', ICE_OPTIONS, f.ice)}` : ''}
@@ -448,16 +474,22 @@ function viewOrder(session) {
           ${btn('submitOrder', f.editId ? '儲存修改' : f.qty > 1 ? `加入 ${f.qty} ${unit}` : '加入訂單', { cls: 'primary lg', disabled: !open || S.busy })}
         </div>
       </div>` : ''}
-    </section>
-
-    ${name ? `<section class="card">
-      <h3 id="myorders">${esc(name)} 在這團的訂單（${esc(countText(mine, session, allShops()))}）</h3>
-      ${mine.length ? `<ul class="list">${mine.map((o) => `<li>
-        <span class="grow">${esc(drinkLabel(o))}${customTag(o)}${shopTag(o, session)} <b class="money">${o.price != null ? `$${o.price}` : ''}</b></span>
-        ${open ? `${btn('editOrder', '✏️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="修改"` })}${btn('delOrder', '🗑️', { cls: 'icon', attrs: `data-id="${esc(o.id)}" aria-label="刪除"`, disabled: S.busy })}` : ''}
-      </li>`).join('')}</ul>` : '<p class="empty">還沒有訂單</p>'}
-    </section>` : ''}`;
+    ${mine.length && !sheetOpen ? `<button type="button" class="cartbar" data-act="toMine"><span>查看我的訂單<small>${esc(countText(mine, session, allShops()))}</small></span><span>$${mineSum}</span></button>` : ''}
+`;
 }
+
+// 品項／店家的方形圖：有照片用照片（載入失敗退回圖示），沒有就用圖示
+function tileHtml(name, kind, px = 360) {
+  const emoji = emojiFor(name, kind);
+  const src = photoFor(name, px);
+  if (!src) return `<span class="emo" aria-hidden="true">${emoji}</span>`;
+  return `<img class="photo" loading="lazy" decoding="async" alt="" src="${esc(src)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'emo',textContent:'${emoji}'}))">`;
+}
+// 店家磚：先看店名，對不到就用菜單裡第一個有照片的品項
+const shopTile = (shop, px = 240) => tileHtml(photoFor(shop.name) ? shop.name : (shop.items.find((i) => photoFor(i.n))?.n ?? shop.name), kindOf(shop), px);
+
+// 手機固定在畫面底部、電腦放在頁首（用 CSS 切換）
+const tabsNav = () => `<nav class="tabs" role="tablist">${[['order', '訂購'], ['summary', '彙總'], ['menu', '菜單'], ['roster', '名單']].map(([k, l]) => `<button type="button" role="tab" class="tab ${S.tab === k ? 'on' : ''}" aria-selected="${S.tab === k}" data-act="tab" data-v="${k}"><svg viewBox="0 0 24 24" aria-hidden="true">${TAB_ICONS[k]}</svg>${l}</button>`).join('')}</nav>`;
 
 const stepper = (bind, value, label) => `<span class="stepper" aria-label="${esc(label)}">
   <button type="button" class="step" data-act="step" data-bind="${bind}" data-d="-1" ${value <= 1 ? 'disabled' : ''} aria-label="減少">−</button>
@@ -794,22 +826,30 @@ function customPrice(f) {
 const modalKind = (session, shop, item) => ({
   kindLabel: KIND_LABEL[kindOf(shop)], unit: KIND_UNIT[kindOf(shop)], shopName: sessionShopIds(session).length > 1 ? shop.name : '',
   emoji: emojiFor(item, kindOf(shop)),
+  photo: photoFor(item, 120),
 });
 
 // 加入訂單後，食物圖示從選的位置拋物線飛到「我的訂單」，目標卡片彈一下
-function flyTo(rect, targetId, emoji) {
+function flyTo(rect, targetId, emoji, photo) {
   const el = document.getElementById(targetId);
   if (!rect || !el || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const b = el.getBoundingClientRect();
   const node = document.createElement('div');
   node.className = 'fly';
   node.setAttribute('aria-hidden', 'true');
-  node.textContent = emoji;
+  if (photo) {
+    const img = document.createElement('img');
+    img.className = 'photo';
+    img.alt = '';
+    img.src = photo;
+    node.appendChild(img);
+  } else node.textContent = emoji;
   document.body.appendChild(node);
-  const x0 = rect.left + rect.width / 2 - 18;
-  const y0 = rect.top + rect.height / 2 - 18;
+  const half = photo ? 24 : 18;
+  const x0 = rect.left + rect.width / 2 - half;
+  const y0 = rect.top + rect.height / 2 - half;
   const x1 = b.left + 24;
-  const y1 = b.top + b.height / 2 - 18;
+  const y1 = b.top + b.height / 2 - half;
   node.animate([
     { transform: `translate(${x0}px, ${y0}px) scale(1)` },
     { transform: `translate(${(x0 + x1) / 2}px, ${Math.min(y0, y1) - 90}px) scale(1.4)`, offset: 0.5 },
@@ -991,6 +1031,8 @@ const actions = {
     render();
     document.querySelector('[data-k="cItem"]')?.focus();
   },
+  cancelPick() { S.f = { ...newForm(), q: S.f.q, shopId: S.f.shopId, cat: S.f.cat }; render(); },
+  toMine() { document.getElementById('myorders')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); },
   cancelCustom() { Object.assign(S.f, { custom: false, cItem: '', cPrice: '' }); render(); },
   toggleTop(el) {
     const n = el.dataset.v;
@@ -1029,15 +1071,15 @@ const actions = {
   async confirmOrderGo() {
     const md = S.modal;
     const cur = current();
-    const from = (document.querySelector('.menu-item.on') ?? document.getElementById('drink'))?.getBoundingClientRect();
+    const from = (document.querySelector('.sheet .sh-head .tile') ?? document.querySelector('.sheet') ?? document.getElementById('drink'))?.getBoundingClientRect();
     const ok = md.editId
       ? await run(() => S.backend.updateOrder(SPACE, md.editId, md.fields), '已更新訂單')
       : await run(() => S.backend.addOrder(SPACE, cur.id, md.fields, md.qty), `已加入 ${md.qty} ${md.unit}：${md.label}`);
     if (!ok) return;
     S.modal = null;
-    if (md.from === 'form') S.f = { ...newForm(), q: S.f.q };
+    if (md.from === 'form') S.f = { ...newForm(), q: S.f.q, shopId: S.f.shopId, cat: S.f.cat };
     render();
-    if (!md.editId) flyTo(from, 'myorders', md.emoji);
+    if (!md.editId) flyTo(from, 'myorders', md.emoji, md.photo);
   },
   cancelEdit() { S.f = { ...newForm(), q: S.f.q }; render(); },
   loadFav(el) {
@@ -1310,6 +1352,7 @@ document.addEventListener('input', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && S.modal) { actions.closeModal(); return; }
+  if (e.key === 'Escape' && S.tab === 'order' && (S.f.item || S.f.custom)) { actions.cancelPick(); return; }
   if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
   const el = e.target.closest('[data-enter]');
   if (!el) return;
